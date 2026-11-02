@@ -1,0 +1,304 @@
+# Voice commands + tile: shutters (venetian blinds) per room, with stop
+#
+#   "Rollo <Raum> runter|zu"        → fully closed
+#   "Rollo <Raum> hoch|auf"         → fully open
+#   "Rollo <Raum> beschatten"       → fully down, then to 1 % (slats slightly open)
+#   "Rollo runter|hoch|beschatten"  → without a room: shutters in the AREA of the asking satellite
+#   "Stopp" / "Rollo stopp"         → stops all shutters moving by voice/tile (or reported opening/closing)
+#   "Rollo <Raum> stopp"            → stops only this room
+#   Tile "Rollo fährt" (sensor.tile_shutter_moving) → tap = stop
+#
+# Flow: the automation starts script.shutter_move (non-blocking, the voice reply comes at once).
+# The script remembers the moving shutters in input_text.shutters_moving, waits until the position
+# no longer changes (stopped or arrived) and then shows the real end position on the satellite.
+#
+# ── ADAPT ──────────────────────────────────────────────────────────────
+#   "rooms": room word (lower case) → shutters. Keys must not contain each other.
+#   The SAME room words go into every sentence list below (Speech-to-Phrase has no wildcards).
+#   After changes: reload YAML AND restart Speech-to-Phrase.
+#   Give sensor.tile_shutter_moving the label "Display".
+
+input_text:
+  shutters_moving:
+    name: "Shutters moving"
+    icon: mdi:window-shutter-settings
+    max: 255
+
+script:
+  # ---------- move + watch ----------
+  shutter_move:
+    alias: "Shutter: move and watch"
+    icon: mdi:window-shutter
+    mode: parallel
+    max: 10
+    fields:
+      covers:
+        description: "List of cover entities"
+      command:
+        description: "down | up | shade"
+      target:
+        description: "Device id of the satellite for the final display (empty = none)"
+      name:
+        description: "Display name, e.g. 'Rollo Büro'"
+    sequence:
+      - variables:
+          active_old: >
+            {% set s = states('input_text.shutters_moving') %}
+            {{ [] if s in ['', 'unknown', 'unavailable'] else s.split(',') }}
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.shutters_moving
+        data:
+          value: "{{ ((active_old + covers) | unique | join(','))[:255] }}"
+      - choose:
+          - conditions: "{{ command == 'down' }}"
+            sequence:
+              - action: cover.close_cover
+                target:
+                  entity_id: "{{ covers }}"
+          - conditions: "{{ command == 'up' }}"
+            sequence:
+              - action: cover.open_cover
+                target:
+                  entity_id: "{{ covers }}"
+          - conditions: "{{ command == 'shade' }}"
+            sequence:
+              - action: script.shutter_shade
+                data:
+                  covers: "{{ covers }}"
+      # wait until nothing moves any more (max. ~3 min)
+      - variables:
+          pos: "{{ covers | map('state_attr', 'current_position') | map('string') | join(',') }}"
+          calm: false
+      - repeat:
+          sequence:
+            - delay: 3
+            - variables:
+                new: "{{ covers | map('state_attr', 'current_position') | map('string') | join(',') }}"
+                moving: "{{ covers | select('is_state', ['opening', 'closing']) | list | count > 0 }}"
+                calm: "{{ new == pos and not moving }}"
+                pos: "{{ new }}"
+          until: "{{ calm or repeat.index >= 60 }}"
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.shutters_moving
+        data:
+          value: >
+            {% set s = states('input_text.shutters_moving') %}
+            {% set l = [] if s in ['', 'unknown', 'unavailable'] else s.split(',') %}
+            {{ l | reject('in', covers) | join(',') }}
+      # show the real end position (0 = closed, 100 = open)
+      - if: "{{ target not in [none, ''] }}"
+        then:
+          - variables:
+              vals: "{{ covers | map('state_attr', 'current_position') | select('number') | list }}"
+              avg: "{{ ((vals | sum) / (vals | count)) | round(0) | int if vals | count > 0 else -1 }}"
+          - action: script.display_answer
+            continue_on_error: true
+            data:
+              target: "{{ target }}"
+              title: "{{ name }}"
+              value: >
+                {% if avg < 0 %}fertig
+                {% elif avg <= 1 and command != 'shade' %}zu
+                {% elif avg <= 1 %}Schatten
+                {% elif avg >= 99 %}offen
+                {% else %}{{ avg }} % offen{% endif %}
+              status: info
+              icon: "{{ 'window-shutter-open' if avg >= 99 else 'window-shutter' }}"
+              duration: 5
+
+  # ---------- stop ----------
+  # without "covers": all moving by voice/tile + all reported as opening/closing
+  shutter_stop:
+    alias: "Shutter: stop"
+    icon: mdi:stop
+    mode: queued
+    fields:
+      covers:
+        description: "optional: only stop these"
+    sequence:
+      - variables:
+          active: >
+            {% set s = states('input_text.shutters_moving') %}
+            {{ [] if s in ['', 'unknown', 'unavailable'] else s.split(',') }}
+          moving: "{{ states.cover | selectattr('state', 'in', ['opening', 'closing']) | map(attribute='entity_id') | list }}"
+          todo: "{{ ((covers if covers is defined and covers else (active + moving))) | unique | list }}"
+      # cancel a running "shade", otherwise it moves to 1 % after the stop
+      - action: script.turn_off
+        target:
+          entity_id: script.shutter_shade
+      - if: "{{ todo | count > 0 }}"
+        then:
+          - action: cover.stop_cover
+            target:
+              entity_id: "{{ todo }}"
+            continue_on_error: true
+      - variables:
+          result:
+            count: "{{ todo | count }}"
+      - stop: "stopped"
+        response_variable: result
+
+  # ---------- shade ----------
+  shutter_shade:
+    alias: "Shutter: shade"
+    icon: mdi:window-shutter
+    mode: parallel
+    fields:
+      covers:
+        description: "List of cover entities"
+    sequence:
+      - action: cover.set_cover_position
+        target:
+          entity_id: "{{ covers }}"
+        data:
+          position: 0
+      - wait_template: "{{ covers | map('state_attr', 'current_position') | reject('eq', 0) | list | count == 0 }}"
+        timeout: "00:02:00"
+        continue_on_timeout: true
+      - delay: 2
+      - action: cover.set_cover_position
+        target:
+          entity_id: "{{ covers }}"
+        data:
+          position: 1
+
+template:
+  - sensor:
+      - name: "Tile Shutter Moving"
+        unique_id: tile_shutter_moving
+        icon: >
+          {{ 'mdi:window-shutter-open' if states.cover | selectattr('state', 'eq', 'opening') | list | count > 0
+             else 'mdi:window-shutter' }}
+        state: >
+          {% set s = states('input_text.shutters_moving') %}
+          {% set active = s not in ['', 'unknown', 'unavailable'] %}
+          {% set moving = states.cover | selectattr('state', 'in', ['opening', 'closing']) | list | count > 0 %}
+          {{ 'info' if active or moving else 'hidden' }}
+        attributes:
+          # before all hints (only shown briefly), so it is among the first 4 small tiles
+          prio: 10
+          title: >
+            {% set s = states('input_text.shutters_moving') %}
+            {% set l = [] if s in ['', 'unknown', 'unavailable'] else s.split(',') %}
+            {% set l = (l + (states.cover | selectattr('state', 'in', ['opening', 'closing']) | map(attribute='entity_id') | list)) | unique | list %}
+            {{ 'Rollos fahren' if l | count > 1 else 'Rollo fährt' }}
+          value: >
+            {% set s = states('input_text.shutters_moving') %}
+            {% set l = [] if s in ['', 'unknown', 'unavailable'] else s.split(',') %}
+            {% set l = (l + (states.cover | selectattr('state', 'in', ['opening', 'closing']) | map(attribute='entity_id') | list)) | unique | list %}
+            {% set ns = namespace(o=[]) %}
+            {% for e in l %}{% set a = area_name(e) %}{% if a and a not in ns.o %}{% set ns.o = ns.o + [a] %}{% endif %}{% endfor %}
+            {{ (ns.o | join(', ') if ns.o else (l | count ~ ' Rollos'))[:20] }}
+          detail: "Antippen = Stopp"
+          progress: -1
+          tap: "ack"
+          action: "script.shutter_stop"
+
+automation:
+  - id: voice_shutter
+    alias: "Voice: shutter"
+    mode: parallel
+    triggers:
+      - trigger: conversation
+        id: down
+        command:
+          - "(Rollo | Rollos) [im | in der | bei] (Büro | Schlafzimmer | Küche | Wohnzimmer | Kinderzimmer) (runter | zu)"
+          - "(Rollo | Rollos) (runter | zu)"
+      - trigger: conversation
+        id: up
+        command:
+          - "(Rollo | Rollos) [im | in der | bei] (Büro | Schlafzimmer | Küche | Wohnzimmer | Kinderzimmer) (hoch | auf)"
+          - "(Rollo | Rollos) (hoch | auf)"
+      - trigger: conversation
+        id: shade
+        command:
+          - "(Rollo | Rollos) [im | in der | bei] (Büro | Schlafzimmer | Küche | Wohnzimmer | Kinderzimmer) beschatten"
+          - "(Büro | Schlafzimmer | Küche | Wohnzimmer | Kinderzimmer) beschatten"
+          - "(Rollo | Rollos) beschatten"
+      - trigger: conversation
+        id: stop
+        command:
+          - "(Rollo | Rollos) [im | in der | bei] (Büro | Schlafzimmer | Küche | Wohnzimmer | Kinderzimmer) (stopp | stop | anhalten)"
+          - "(Rollo | Rollos) (stopp | stop | anhalten)"
+          - "(Stopp | Stop | Halt | Anhalten)"
+    variables:
+      rooms:
+        "büro": ["cover.office"]
+        "schlafzimmer": ["cover.bedroom"]
+        "küche": ["cover.kitchen"]
+        "wohnzimmer": ["cover.living_room", "cover.dining"]
+        "kinderzimmer": ["cover.kids_room_left", "cover.kids_room_right"]
+      sentence: "{{ trigger.sentence | lower }}"
+      room: >
+        {% set ns = namespace(r='') %}
+        {% for k in rooms.keys() if ns.r == '' and k in sentence %}{% set ns.r = k %}{% endfor %}
+        {{ ns.r }}
+      # without a room: shutters in the HA area of the satellite (cover groups excluded)
+      sat_area: "{{ area_id(trigger.device_id) if trigger.device_id else none }}"
+      area_covers: >
+        {% set ns = namespace(l=[]) %}
+        {% if sat_area %}
+          {% for e in area_entities(sat_area) if e.startswith('cover.') and state_attr(e, 'entity_id') is none %}
+            {% set ns.l = ns.l + [e] %}
+          {% endfor %}
+        {% endif %}
+        {{ ns.l }}
+      covers: "{{ rooms.get(room, []) if room else area_covers }}"
+      place: "{{ (room[:1] | upper ~ room[1:]) if room else (area_name(sat_area) if sat_area else '') }}"
+      name: "{{ ('Rollos ' if covers | count > 1 else 'Rollo ') ~ place }}"
+    actions:
+      - choose:
+          # ---- stop ----
+          - conditions: "{{ trigger.id == 'stop' }}"
+            sequence:
+              - action: script.shutter_stop
+                data:
+                  covers: "{{ rooms.get(room, []) if room else [] }}"
+                response_variable: res
+              - variables:
+                  n: "{{ res.count | int(0) }}"
+              - action: script.display_answer
+                continue_on_error: true
+                data:
+                  target: "{{ trigger.device_id }}"
+                  title: "{{ name if room else 'Rollos' }}"
+                  value: "{{ 'Stopp' if n > 0 else 'steht' }}"
+                  status: info
+                  icon: window-shutter
+                  duration: 3
+              - set_conversation_response: >
+                  {% if room %}{{ name }} {{ 'halten' if covers | count > 1 else 'hält' }} an.
+                  {% elif n > 0 %}Angehalten.
+                  {% else %}Es fährt gerade kein Rollo.{% endif %}
+          # ---- no shutter found ----
+          - conditions: "{{ covers | count == 0 }}"
+            sequence:
+              - set_conversation_response: "Welches Rollo meinst du? Zum Beispiel: Rollo Büro runter."
+        # ---- down / up / shade ----
+        default:
+          - action: script.turn_on
+            target:
+              entity_id: script.shutter_move
+            data:
+              variables:
+                covers: "{{ covers }}"
+                command: "{{ trigger.id }}"
+                target: "{{ trigger.device_id or '' }}"
+                name: "{{ name }}"
+          - action: script.display_answer
+            continue_on_error: true
+            data:
+              target: "{{ trigger.device_id }}"
+              title: "{{ name }}"
+              value: "{{ {'down': 'fährt runter', 'up': 'fährt hoch', 'shade': 'Schatten'}[trigger.id] }}"
+              detail: "„Stopp“ = anhalten"
+              status: info
+              icon: "{{ 'window-shutter-open' if trigger.id == 'up' else 'window-shutter' }}"
+              duration: 4
+          - set_conversation_response: >
+              {% set plural = covers | count > 1 %}
+              {% if trigger.id == 'down' %}{{ name }} {{ 'fahren' if plural else 'fährt' }} runter.
+              {% elif trigger.id == 'up' %}{{ name }} {{ 'fahren' if plural else 'fährt' }} hoch.
+              {% else %}{{ name }} {{ 'werden' if plural else 'wird' }} beschattet.{% endif %}

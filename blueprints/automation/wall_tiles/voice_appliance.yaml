@@ -1,0 +1,108 @@
+blueprint:
+  name: "Wall tiles voice: is the appliance done?"
+  description: >
+    Voice command (Assist / Speech-to-Phrase) for a washer, dryer or dishwasher:
+    is it running, how long, when is it done. Answers by voice and shows the answer
+    on the asking satellite via script.display_answer.
+    After changing sentences: reload automations AND restart Speech-to-Phrase.
+  domain: automation
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/automation/wall_tiles/voice_appliance.yaml
+  input:
+    sentences:
+      name: Sentences
+      default:
+        - "Waschmaschine"
+        - "Wie lange (braucht | läuft) die Waschmaschine [noch]"
+        - "Läuft die Waschmaschine [noch]"
+        - "Ist die (Waschmaschine | Wäsche) fertig"
+        - "Wann ist die (Waschmaschine | Wäsche) fertig"
+      selector:
+        text:
+          multiple: true
+    name:
+      name: Spoken name (with article)
+      default: "Die Waschmaschine"
+      selector:
+        text:
+    title:
+      name: Display title
+      default: "Waschmaschine"
+      selector:
+        text:
+    icon:
+      name: Icon (MDI name without mdi:)
+      default: "washing-machine"
+      selector:
+        text:
+    running_entity:
+      name: Running (state "on" while running)
+      selector:
+        entity:
+    remaining_entity:
+      name: Remaining minutes (optional)
+      default: ""
+      selector:
+        entity:
+          domain: sensor
+    progress_entity:
+      name: Progress % (optional)
+      default: ""
+      selector:
+        entity:
+          domain: sensor
+    program_entity:
+      name: Program (optional)
+      default: ""
+      selector:
+        entity:
+          domain: sensor
+
+mode: parallel
+
+triggers:
+  - trigger: conversation
+    command: !input sentences
+
+variables:
+  name_: !input name
+  title_: !input title
+  icon_: !input icon
+  run_e: !input running_entity
+  rem_e: !input remaining_entity
+  prog_e: !input progress_entity
+  pgm_e: !input program_entity
+  running: "{{ is_state(run_e, 'on') }}"
+  rest: >
+    {% set r = states(rem_e) if rem_e else '' %}
+    {{ r | float | round(0) | int if r | is_number else -1 }}
+  percent: >
+    {% set p = states(prog_e) if prog_e else '' %}
+    {{ p | float | round(0) | int if p | is_number else -1 }}
+  program: >
+    {% set p = states(pgm_e) if pgm_e else '' %}
+    {{ '' if p in ['unknown', 'unavailable', 'off', '', 'none'] else p }}
+  end: "{{ (now() + timedelta(minutes=rest)).strftime('%H:%M') if rest > 0 else '' }}"
+  duration_s: >
+    {% set h = rest // 60 %}{% set m = rest % 60 %}
+    {% if rest >= 60 %}{{ h }} {{ 'Stunde' if h == 1 else 'Stunden' }}{{ (' und ' ~ m ~ (' Minute' if m == 1 else ' Minuten')) if m > 0 else '' }}
+    {% elif rest > 0 %}{{ rest }} {{ 'Minute' if rest == 1 else 'Minuten' }}{% endif %}
+
+actions:
+  - action: script.display_answer
+    continue_on_error: true
+    data:
+      target: "{{ trigger.device_id }}"
+      title: "{{ title_ }}"
+      value: >
+        {% if not running %}aus
+        {% elif rest >= 60 %}{{ rest // 60 }}:{{ '%02d' | format(rest % 60) }} h
+        {% elif rest > 0 %}{{ rest }} min
+        {% else %}läuft{% endif %}
+      detail: "{{ [('fertig ' ~ end) if running and end else '', program if running else ''] | select | join(' · ') }}"
+      status: "{{ 'info' if running else 'off' }}"
+      icon: "{{ icon_ }}"
+  - set_conversation_response: >
+      {% if not running %}{{ name_ }} läuft gerade nicht.
+      {% elif rest > 0 %}{{ name_ }} braucht noch {{ duration_s }}, fertig gegen {{ end }} Uhr.
+      {% elif percent >= 0 %}{{ name_ }} läuft noch und ist zu {{ percent }} Prozent fertig.
+      {% else %}{{ name_ }} läuft noch.{% endif %}

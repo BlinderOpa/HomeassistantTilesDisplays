@@ -1,0 +1,190 @@
+blueprint:
+  name: "Wall tiles voice: weather and rain (today / tomorrow)"
+  description: >
+    Voice commands for the weather and "will it rain?" today or tomorrow.
+    Needs a weather entity with daily AND hourly forecast (Met.no: yes).
+    Rain questions use the hourly forecast: today = from now until midnight,
+    tomorrow = 6:00–21:59. An hour counts as wet from 0.2 mm or 50 % probability.
+  domain: automation
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/automation/wall_tiles/voice_weather.yaml
+  input:
+    weather_entity:
+      name: Weather entity
+      selector:
+        entity:
+          domain: weather
+    s_weather_today:
+      name: Sentences – weather today
+      default: ["Wetter", "Wetter heute", "Wettervorhersage", "Wie (wird | ist) das Wetter [heute]"]
+      selector: {text: {multiple: true}}
+    s_weather_tomorrow:
+      name: Sentences – weather tomorrow
+      default: ["Wetter morgen", "Wettervorhersage [für] morgen", "Wie wird das Wetter morgen"]
+      selector: {text: {multiple: true}}
+    s_rain_today:
+      name: Sentences – rain today
+      default: ["Regen", "Regnet es [heute]", "Wird es [heute] regnen", "Gibt es [heute] Regen", "Brauche ich einen (Schirm | Regenschirm)"]
+      selector: {text: {multiple: true}}
+    s_rain_tomorrow:
+      name: Sentences – rain tomorrow
+      default: ["Regen morgen", "Regnet es morgen", "Wird es morgen regnen", "Gibt es morgen Regen"]
+      selector: {text: {multiple: true}}
+
+mode: parallel
+
+triggers:
+  - trigger: conversation
+    id: weather_today
+    command: !input s_weather_today
+  - trigger: conversation
+    id: weather_tomorrow
+    command: !input s_weather_tomorrow
+  - trigger: conversation
+    id: rain_today
+    command: !input s_rain_today
+  - trigger: conversation
+    id: rain_tomorrow
+    command: !input s_rain_tomorrow
+
+variables:
+  we: !input weather_entity
+
+actions:
+  - action: weather.get_forecasts
+    target:
+      entity_id: "{{ we }}"
+    data:
+      type: daily
+    response_variable: wd
+  - action: weather.get_forecasts
+    target:
+      entity_id: "{{ we }}"
+    data:
+      type: hourly
+    response_variable: wh
+
+  - variables:
+      tomorrow: "{{ trigger.id.endswith('tomorrow') }}"
+      rainq: "{{ trigger.id.startswith('rain') }}"
+      dayname: "{{ 'Morgen' if tomorrow else 'Heute' }}"
+      day: "{{ (now() + timedelta(days=1 if tomorrow else 0)).date() | string }}"
+      dayf: >
+        {% set ns = namespace(f=none) %}
+        {% for f in wd[we].forecast | default([])
+             if ns.f is none and ((as_datetime(f.datetime) | as_local).date() | string) == day %}
+          {% set ns.f = f %}
+        {% endfor %}
+        {{ ns.f if ns.f is not none else {} }}
+      cond: "{{ dayf.get('condition', '') }}"
+      hi: "{% set v = dayf.get('temperature') %}{{ v | round(0) | int if v is number else none }}"
+      lo: "{% set v = dayf.get('templow') %}{{ v | round(0) | int if v is number else none }}"
+      hi_s: "{{ ('minus ' ~ (hi | abs)) if hi is number and hi < 0 else hi }}"
+      lo_s: "{{ ('minus ' ~ (lo | abs)) if lo is number and lo < 0 else lo }}"
+      p_day: "{% set v = dayf.get('precipitation_probability') %}{{ v | int if v is number else none }}"
+      mm_day: "{% set v = dayf.get('precipitation') %}{{ v | float if v is number else none }}"
+      wind: "{% set v = dayf.get('wind_speed') %}{{ v | round(0) | int if v is number else none }}"
+      cond_txt: >
+        {{ {'sunny':'sonnig', 'clear-night':'klar', 'partlycloudy':'teils bewölkt',
+            'cloudy':'bewölkt', 'rainy':'Regen', 'pouring':'Starkregen',
+            'snowy':'Schnee', 'snowy-rainy':'Schneeregen', 'fog':'Nebel',
+            'hail':'Hagel', 'lightning':'Gewitter', 'lightning-rainy':'Gewitter',
+            'windy':'windig', 'windy-variant':'windig', 'exceptional':'Unwetter'}.get(cond, '') }}
+      # only 6 weather glyphs, so small satellites need few icons
+      cond_icon: >
+        {{ {'sunny':'weather-sunny', 'clear-night':'weather-sunny',
+            'partlycloudy':'weather-partly-cloudy', 'cloudy':'weather-cloudy', 'fog':'weather-cloudy',
+            'windy':'weather-cloudy', 'windy-variant':'weather-cloudy',
+            'rainy':'weather-rainy', 'pouring':'weather-rainy',
+            'snowy':'weather-snowy', 'snowy-rainy':'weather-snowy',
+            'lightning':'weather-lightning', 'lightning-rainy':'weather-lightning',
+            'hail':'alert', 'exceptional':'alert'}.get(cond, 'weather-partly-cloudy') }}
+      hours: >
+        {% set ns = namespace(l=[]) %}
+        {% for f in wh[we].forecast | default([]) %}
+          {% set t = as_datetime(f.datetime) | as_local %}
+          {% set window = (6 <= t.hour < 22) if tomorrow else (t > now() - timedelta(hours=1)) %}
+          {% if (t.date() | string) == day and window %}
+            {% set mm = f.get('precipitation') | float(0) %}
+            {% set p = f.get('precipitation_probability') | int(-1) %}
+            {% set ns.l = ns.l + [{'h': t.hour, 'mm': mm, 'p': p, 'wet': mm >= 0.2 or p >= 50}] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.l }}
+      wet_h: "{{ hours | selectattr('wet') | map(attribute='h') | list }}"
+      from_h: "{{ wet_h | first if wet_h | count > 0 else -1 }}"
+      to_h: "{{ (wet_h | last) + 1 if wet_h | count > 0 else -1 }}"
+      mm_sum: "{{ hours | map(attribute='mm') | sum | round(0) | int }}"
+      wet_now: "{{ not tomorrow and states(we) in ['rainy', 'pouring', 'lightning-rainy', 'snowy-rainy', 'hail'] }}"
+      dry_from: >
+        {% set ns = namespace(h=-1) %}
+        {% for s in hours if ns.h == -1 and not s.wet %}{% set ns.h = s.h %}{% endfor %}
+        {{ ns.h }}
+
+  - variables:
+      result: >
+        {% if rainq %}
+          {% if wet_now %}now
+          {% elif wet_h | count > 0 %}later
+          {% elif hours | count == 0 and not dayf %}none
+          {% elif hours | count == 0 and ((mm_day or 0) >= 1 or (p_day or 0) >= 50) %}day
+          {% else %}dry{% endif %}
+        {% else %}{{ 'weather' if dayf else 'none' }}{% endif %}
+      soon: "{{ not tomorrow and from_h != -1 and from_h <= now().hour }}"
+
+  - action: script.display_answer
+    continue_on_error: true
+    data:
+      target: "{{ trigger.device_id }}"
+      title: "{{ ('Regen ' if rainq else 'Wetter ') ~ dayname | lower }}"
+      value: >
+        {% if result == 'none' %}keine Daten
+        {% elif result == 'now' %}jetzt
+        {% elif result == 'later' %}{{ 'bald' if soon else 'ab ' ~ '%02d' | format(from_h) ~ ':00' }}
+        {% elif result == 'day' %}möglich
+        {% elif result == 'dry' %}trocken
+        {% elif lo is not none and hi is not none %}{{ lo }}° / {{ hi }}°
+        {% elif hi is not none %}bis {{ hi }}°
+        {% else %}{{ cond_txt }}{% endif %}
+      detail: >
+        {% if result == 'now' %}
+          {% if dry_from == -1 %}bis heute Abend
+          {% elif dry_from <= now().hour %}hört bald auf
+          {% else %}bis ca. {{ '%02d' | format(dry_from) }}:00{% endif %}
+        {% elif result == 'later' %}
+          {{ ('bis ca. ' ~ '%02d' | format(to_h) ~ ':00' if to_h <= 23 else 'bis abends')
+             ~ (' · ca. ' ~ mm_sum ~ ' mm' if mm_sum >= 1 else '') }}
+        {% elif result == 'day' %}
+          {{ ['ca. ' ~ (mm_day | round(0) | int) ~ ' mm' if (mm_day or 0) >= 1 else '',
+              'Risiko ' ~ p_day ~ ' %' if (p_day or 0) > 0 else ''] | select | join(' · ') }}
+        {% elif result == 'weather' %}
+          {{ [cond_txt, 'Regen ' ~ p_day ~ ' %' if (p_day or 0) >= 20
+                        else ('Regen ' ~ (mm_day | round(0) | int) ~ ' mm' if (mm_day or 0) >= 1 else '')]
+             | select | join(' · ') }}
+        {% else %}{{ cond_txt }}{% endif %}
+      status: >
+        {% if result in ['now', 'later', 'day'] %}warn
+        {% elif result == 'dry' %}ok
+        {% elif result == 'weather' and ((lo is not none and lo <= 0)
+             or cond in ['lightning', 'lightning-rainy', 'hail', 'exceptional']) %}warn
+        {% else %}info{% endif %}
+      icon: >
+        {% if result == 'none' %}help
+        {% elif result in ['now', 'later', 'day'] %}weather-rainy
+        {% elif result == 'dry' %}check
+        {% else %}{{ cond_icon }}{% endif %}
+
+  - set_conversation_response: >
+      {% if result == 'none' %}Ich habe gerade keine Wetterdaten.
+      {% elif result == 'now' %}Es regnet gerade{% if dry_from == -1 %}, und das bleibt heute voraussichtlich so{% elif dry_from <= now().hour %}, es hört aber voraussichtlich bald auf{% else %}, voraussichtlich bis etwa {{ dry_from }} Uhr{% endif %}.
+      {% elif result == 'later' %}{{ dayname }} kann es {{ 'demnächst' if soon else 'ab etwa ' ~ from_h ~ ' Uhr' }} regnen{% if to_h <= 23 %}, bis etwa {{ to_h }} Uhr{% endif %}{% if mm_sum >= 1 %}, insgesamt rund {{ mm_sum }} Millimeter{% endif %}.
+      {% elif result == 'day' %}{{ dayname }} kann es regnen{% if (mm_day or 0) >= 1 %}, etwa {{ mm_day | round(0) | int }} Millimeter{% endif %}{% if (p_day or 0) > 0 %}, Regenrisiko {{ p_day }} Prozent{% endif %}.
+      {% elif result == 'dry' %}Nein, {{ dayname | lower }} bleibt es voraussichtlich trocken.
+      {% else %}
+        {% set t = [(dayname ~ ' ' ~ cond_txt) | trim] %}
+        {% if lo is not none and hi is not none %}{% set t = t + [lo_s ~ ' bis ' ~ hi_s ~ ' Grad'] %}
+        {% elif hi is not none %}{% set t = t + ['bis ' ~ hi_s ~ ' Grad'] %}{% endif %}
+        {% if (p_day or 0) >= 20 %}{% set t = t + ['Regenrisiko ' ~ p_day ~ ' Prozent'] %}
+        {% elif (mm_day or 0) >= 1 %}{% set t = t + ['etwa ' ~ (mm_day | round(0) | int) ~ ' Millimeter Regen'] %}{% endif %}
+        {% if (wind or 0) >= 40 %}{% set t = t + ['windig'] %}{% endif %}
+        {{ t | join(', ') }}.{% if lo is not none and lo <= 0 %} Achtung, Frost möglich.{% endif %}{% if cond in ['lightning', 'lightning-rainy'] %} Achtung, Gewitter möglich.{% endif %}
+      {% endif %}

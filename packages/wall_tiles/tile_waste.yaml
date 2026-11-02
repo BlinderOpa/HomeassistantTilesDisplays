@@ -1,0 +1,93 @@
+# Tile: waste collection
+#   Visible the day before from 15:00 and on collection day until 10:00, until "put out" is tapped.
+#   Tap → input_boolean.waste_put_out = on → tile disappears. Reset daily at 12:00.
+#
+# ── ADAPT ──────────────────────────────────────────────────────────────
+#   calendar.waste_collection   your collection calendar (e.g. HACS "Waste Collection Schedule"),
+#                               search & replace, 4 occurrences
+#   Mapping of event titles to short labels: see "value" below (Rest/Bio/Papier/Gelb/Problem).
+input_boolean:
+  waste_put_out:
+    name: "Waste put out"
+    icon: mdi:trash-can-outline
+
+automation:
+  - id: waste_put_out_reset
+    alias: "Waste: reset flag"
+    triggers:
+      - trigger: time
+        at: "12:00:00"
+    actions:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.waste_put_out
+
+template:
+  - triggers:
+      - trigger: time_pattern
+        minutes: "/30"
+      - trigger: homeassistant
+        event: start
+      - trigger: event
+        event_type: event_template_reloaded
+    actions:
+      - action: calendar.get_events
+        target:
+          entity_id: calendar.waste_collection
+        data:
+          start_date_time: "{{ today_at('00:00').isoformat() }}"
+          duration:
+            hours: 48
+        response_variable: cal
+    sensor:
+      - name: "Waste Dates"
+        unique_id: waste_dates
+        icon: mdi:trash-can
+        # state: today | tomorrow | none
+        state: >
+          {% set ev = cal['calendar.waste_collection'].events | default([]) %}
+          {% set d0 = now().date() | string %}
+          {% set d1 = (now() + timedelta(days=1)).date() | string %}
+          {% if ev | selectattr('start', 'search', '^' ~ d0) | list | count > 0 %}today
+          {% elif ev | selectattr('start', 'search', '^' ~ d1) | list | count > 0 %}tomorrow
+          {% else %}none{% endif %}
+        attributes:
+          today: >
+            {% set ev = cal['calendar.waste_collection'].events | default([]) %}
+            {{ ev | selectattr('start', 'search', '^' ~ (now().date() | string)) | map(attribute='summary') | list }}
+          tomorrow: >
+            {% set ev = cal['calendar.waste_collection'].events | default([]) %}
+            {{ ev | selectattr('start', 'search', '^' ~ ((now() + timedelta(days=1)).date() | string)) | map(attribute='summary') | list }}
+
+  - sensor:
+      - name: "Tile Waste"
+        unique_id: tile_waste
+        icon: mdi:trash-can
+        state: >
+          {% set h = now().hour %}
+          {% set today = state_attr('sensor.waste_dates', 'today') or [] %}
+          {% set tomorrow = state_attr('sensor.waste_dates', 'tomorrow') or [] %}
+          {% if is_state('input_boolean.waste_put_out', 'on') %}hidden
+          {% elif h >= 15 and tomorrow | count > 0 %}warn
+          {% elif h < 10 and today | count > 0 %}warn
+          {% else %}hidden{% endif %}
+        attributes:
+          prio: 19
+          title: >
+            {{ 'Müll heute' if now().hour < 10 and (state_attr('sensor.waste_dates', 'today') or []) else 'Müll morgen' }}
+          value: >
+            {% set l = (state_attr('sensor.waste_dates', 'today') or [])
+                       if now().hour < 10 else (state_attr('sensor.waste_dates', 'tomorrow') or []) %}
+            {% set ns = namespace(k=[]) %}
+            {% for s in l %}
+              {% set x = s | lower %}
+              {% set k = 'Rest' if 'rest' in x else 'Bio' if 'bio' in x else 'Papier' if 'papier' in x
+                         else 'Gelb' if ('gelb' in x or 'wertstoff' in x or 'verpack' in x)
+                         else 'Problem' if 'problem' in x else s %}
+              {% if k not in ns.k %}{% set ns.k = ns.k + [k] %}{% endif %}
+            {% endfor %}
+            {{ ns.k | join(' + ') }}
+          detail: "Antippen = rausgestellt"
+          progress: -1
+          tap: "ack"
+          action: "input_boolean.waste_put_out"

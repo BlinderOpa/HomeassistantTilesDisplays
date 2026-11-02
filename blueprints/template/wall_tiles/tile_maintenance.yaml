@@ -1,0 +1,156 @@
+blueprint:
+  name: "Wall tiles: maintenance / system hints"
+  description: >
+    One collective tile for everything that needs attention "some time".
+    Every check is optional – leave an input empty to skip it.
+    One hint → shown directly, several → "3 Hinweise" with the list in the detail line.
+    The attribute "list" holds all current hints.
+  domain: template
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/template/wall_tiles/tile_maintenance.yaml
+  input:
+    internet_entity:
+      name: Internet connection (binary sensor, off = down)
+      default: ""
+      selector: {entity: {domain: binary_sensor}}
+    power_problem_entity:
+      name: Power supply problem (binary sensor, on = problem), e.g. Raspberry Pi power status
+      default: ""
+      selector: {entity: {domain: binary_sensor}}
+    filter_entity:
+      name: Filter clogging in % (e.g. ventilation)
+      default: ""
+      selector: {entity: {domain: sensor}}
+    filter_limit:
+      name: Filter limit (%)
+      default: 80
+      selector: {number: {min: 10, max: 100, unit_of_measurement: "%"}}
+    toner_entities:
+      name: Toner / ink level sensors (%)
+      default: []
+      selector: {entity: {domain: sensor, multiple: true}}
+    toner_limit:
+      name: Toner limit (%)
+      default: 10
+      selector: {number: {min: 1, max: 50, unit_of_measurement: "%"}}
+    printer_warning_entity:
+      name: Printer active warnings (count)
+      default: ""
+      selector: {entity: {domain: sensor}}
+    care_entities:
+      name: '"Maintenance due" binary sensors (washer, dishwasher …)'
+      default: []
+      selector: {entity: {domain: binary_sensor, multiple: true}}
+    offline_entities:
+      name: Connectivity binary sensors (off = offline), e.g. Homematic radio
+      default: []
+      selector: {entity: {domain: binary_sensor, multiple: true}}
+    repairs_entity:
+      name: Number of HA repairs (e.g. Spook "active issues")
+      default: ""
+      selector: {entity: {domain: sensor}}
+    backup_entity:
+      name: Last successful backup (timestamp)
+      default: ""
+      selector: {entity: {domain: sensor}}
+    backup_days:
+      name: Backup older than (days)
+      default: 2
+      selector: {number: {min: 1, max: 30}}
+    prio:
+      name: Priority
+      default: 45
+      selector: {number: {min: 0, max: 99}}
+
+variables:
+  inet: !input internet_entity
+  pwr: !input power_problem_entity
+  filt: !input filter_entity
+  filt_l: !input filter_limit
+  toner: !input toner_entities
+  toner_l: !input toner_limit
+  prn: !input printer_warning_entity
+  care: !input care_entities
+  offl: !input offline_entities
+  rep: !input repairs_entity
+  bak: !input backup_entity
+  bak_d: !input backup_days
+  prio_: !input prio
+
+sensor:
+  icon: mdi:wrench
+  state: >
+    {%- set ns = namespace(n=0) -%}
+    {%- if inet and is_state(inet, 'off') -%}{%- set ns.n = ns.n + 1 -%}{%- endif -%}
+    {%- if pwr and is_state(pwr, 'on') -%}{%- set ns.n = ns.n + 1 -%}{%- endif -%}
+    {%- if filt and states(filt) | float(0) >= filt_l | float -%}{%- set ns.n = ns.n + 1 -%}{%- endif -%}
+    {%- for e in toner if states(e) | float(100) < toner_l | float -%}{%- set ns.n = ns.n + 1 -%}{%- endfor -%}
+    {%- if prn and states(prn) | int(0) > 0 -%}{%- set ns.n = ns.n + 1 -%}{%- endif -%}
+    {%- for e in care if is_state(e, 'on') -%}{%- set ns.n = ns.n + 1 -%}{%- endfor -%}
+    {%- for e in offl if is_state(e, 'off') -%}{%- set ns.n = ns.n + 1 -%}{%- endfor -%}
+    {%- if rep and states(rep) | int(0) > 0 -%}{%- set ns.n = ns.n + 1 -%}{%- endif -%}
+    {%- set b = states(bak) if bak else '' -%}
+    {%- set bd = as_datetime(b) if b not in ['unknown', 'unavailable', ''] else none -%}
+    {%- if bd is not none and now() - bd > timedelta(days=bak_d | int) -%}{%- set ns.n = ns.n + 1 -%}{%- endif -%}
+    {{ 'warn' if ns.n > 0 else 'hidden' }}
+  attributes:
+    list: >
+      {%- set ns = namespace(l=[]) -%}
+      {%- if inet and is_state(inet, 'off') -%}{%- set ns.l = ns.l + ['Internet weg'] -%}{%- endif -%}
+      {%- if pwr and is_state(pwr, 'on') -%}{%- set ns.l = ns.l + ['Stromversorgung'] -%}{%- endif -%}
+      {%- set f = states(filt) | float(0) if filt else 0 -%}
+      {%- if f >= filt_l | float -%}{%- set ns.l = ns.l + ['Filter ' ~ (f | int) ~ ' %'] -%}{%- endif -%}
+      {%- for e in toner -%}
+        {%- set t = states(e) | float(100) -%}
+        {%- if t < toner_l | float -%}{%- set ns.l = ns.l + [(state_attr(e, 'friendly_name') or e) | replace('Tonerfüllstand', 'Toner') ~ ' ' ~ (t | int) ~ ' %'] -%}{%- endif -%}
+      {%- endfor -%}
+      {%- if prn and states(prn) | int(0) > 0 -%}{%- set ns.l = ns.l + ['Drucker-Warnung'] -%}{%- endif -%}
+      {%- for e in care if is_state(e, 'on') -%}{%- set ns.l = ns.l + [(state_attr(e, 'friendly_name') or e)] -%}{%- endfor -%}
+      {%- for e in offl if is_state(e, 'off') -%}{%- set ns.l = ns.l + [(state_attr(e, 'friendly_name') or e) ~ ' offline'] -%}{%- endfor -%}
+      {%- set r = states(rep) | int(0) if rep else 0 -%}
+      {%- if r > 0 -%}{%- set ns.l = ns.l + [r ~ ' HA-Reparatur' ~ ('en' if r > 1 else '')] -%}{%- endif -%}
+      {%- set b = states(bak) if bak else '' -%}
+      {%- set bd = as_datetime(b) if b not in ['unknown', 'unavailable', ''] else none -%}
+      {%- if bd is not none and now() - bd > timedelta(days=bak_d | int) -%}{%- set ns.l = ns.l + ['Backup ' ~ (now() - bd).days ~ ' Tage alt'] -%}{%- endif -%}
+      {{ ns.l }}
+    prio: "{{ prio_ | int }}"
+    title: "Wartung"
+    value: >
+      {%- set ns = namespace(l=[]) -%}
+      {%- if inet and is_state(inet, 'off') -%}{%- set ns.l = ns.l + ['Internet weg'] -%}{%- endif -%}
+      {%- if pwr and is_state(pwr, 'on') -%}{%- set ns.l = ns.l + ['Stromversorgung'] -%}{%- endif -%}
+      {%- set f = states(filt) | float(0) if filt else 0 -%}
+      {%- if f >= filt_l | float -%}{%- set ns.l = ns.l + ['Filter ' ~ (f | int) ~ ' %'] -%}{%- endif -%}
+      {%- for e in toner -%}
+        {%- set t = states(e) | float(100) -%}
+        {%- if t < toner_l | float -%}{%- set ns.l = ns.l + [(state_attr(e, 'friendly_name') or e) | replace('Tonerfüllstand', 'Toner') ~ ' ' ~ (t | int) ~ ' %'] -%}{%- endif -%}
+      {%- endfor -%}
+      {%- if prn and states(prn) | int(0) > 0 -%}{%- set ns.l = ns.l + ['Drucker-Warnung'] -%}{%- endif -%}
+      {%- for e in care if is_state(e, 'on') -%}{%- set ns.l = ns.l + [(state_attr(e, 'friendly_name') or e)] -%}{%- endfor -%}
+      {%- for e in offl if is_state(e, 'off') -%}{%- set ns.l = ns.l + [(state_attr(e, 'friendly_name') or e) ~ ' offline'] -%}{%- endfor -%}
+      {%- set r = states(rep) | int(0) if rep else 0 -%}
+      {%- if r > 0 -%}{%- set ns.l = ns.l + [r ~ ' HA-Reparatur' ~ ('en' if r > 1 else '')] -%}{%- endif -%}
+      {%- set b = states(bak) if bak else '' -%}
+      {%- set bd = as_datetime(b) if b not in ['unknown', 'unavailable', ''] else none -%}
+      {%- if bd is not none and now() - bd > timedelta(days=bak_d | int) -%}{%- set ns.l = ns.l + ['Backup ' ~ (now() - bd).days ~ ' Tage alt'] -%}{%- endif -%}
+      {{ ns.l[0] if ns.l | count == 1 else (ns.l | count) ~ ' Hinweise' }}
+    detail: >
+      {%- set ns = namespace(l=[]) -%}
+      {%- if inet and is_state(inet, 'off') -%}{%- set ns.l = ns.l + ['Internet weg'] -%}{%- endif -%}
+      {%- if pwr and is_state(pwr, 'on') -%}{%- set ns.l = ns.l + ['Stromversorgung'] -%}{%- endif -%}
+      {%- set f = states(filt) | float(0) if filt else 0 -%}
+      {%- if f >= filt_l | float -%}{%- set ns.l = ns.l + ['Filter ' ~ (f | int) ~ ' %'] -%}{%- endif -%}
+      {%- for e in toner -%}
+        {%- set t = states(e) | float(100) -%}
+        {%- if t < toner_l | float -%}{%- set ns.l = ns.l + [(state_attr(e, 'friendly_name') or e) | replace('Tonerfüllstand', 'Toner') ~ ' ' ~ (t | int) ~ ' %'] -%}{%- endif -%}
+      {%- endfor -%}
+      {%- if prn and states(prn) | int(0) > 0 -%}{%- set ns.l = ns.l + ['Drucker-Warnung'] -%}{%- endif -%}
+      {%- for e in care if is_state(e, 'on') -%}{%- set ns.l = ns.l + [(state_attr(e, 'friendly_name') or e)] -%}{%- endfor -%}
+      {%- for e in offl if is_state(e, 'off') -%}{%- set ns.l = ns.l + [(state_attr(e, 'friendly_name') or e) ~ ' offline'] -%}{%- endfor -%}
+      {%- set r = states(rep) | int(0) if rep else 0 -%}
+      {%- if r > 0 -%}{%- set ns.l = ns.l + [r ~ ' HA-Reparatur' ~ ('en' if r > 1 else '')] -%}{%- endif -%}
+      {%- set b = states(bak) if bak else '' -%}
+      {%- set bd = as_datetime(b) if b not in ['unknown', 'unavailable', ''] else none -%}
+      {%- if bd is not none and now() - bd > timedelta(days=bak_d | int) -%}{%- set ns.l = ns.l + ['Backup ' ~ (now() - bd).days ~ ' Tage alt'] -%}{%- endif -%}
+      {{ ns.l | join(', ') if ns.l | count > 1 else '' }}
+    progress: -1
+    tap: "none"

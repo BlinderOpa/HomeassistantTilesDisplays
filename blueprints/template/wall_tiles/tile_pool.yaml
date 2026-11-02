@@ -1,0 +1,84 @@
+blueprint:
+  name: "Wall tiles: pool water"
+  description: >
+    Pool season only: warns when pH is outside its range or redox (ORP) is too low
+    (= too little chlorine). Detail shows pH, redox and water temperature.
+  domain: template
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/template/wall_tiles/tile_pool.yaml
+  input:
+    ph_entity:
+      name: pH sensor
+      selector: {entity: {domain: sensor}}
+    orp_entity:
+      name: Redox / ORP sensor in mV (optional)
+      default: ""
+      selector: {entity: {domain: sensor}}
+    temp_entity:
+      name: Water temperature (optional)
+      default: ""
+      selector: {entity: {domain: sensor}}
+    ph_min:
+      name: pH min
+      default: 7.0
+      selector: {number: {min: 6, max: 8, step: 0.1}}
+    ph_max:
+      name: pH max
+      default: 7.6
+      selector: {number: {min: 6, max: 8.5, step: 0.1}}
+    orp_min:
+      name: Redox min (mV)
+      default: 650
+      selector: {number: {min: 300, max: 900, unit_of_measurement: mV}}
+    month_from:
+      name: Season starts (month)
+      default: 5
+      selector: {number: {min: 1, max: 12}}
+    month_to:
+      name: Season ends (month)
+      default: 9
+      selector: {number: {min: 1, max: 12}}
+    prio:
+      name: Priority
+      default: 27
+      selector: {number: {min: 0, max: 99}}
+
+variables:
+  ph_e: !input ph_entity
+  orp_e: !input orp_entity
+  temp_e: !input temp_entity
+  ph_min: !input ph_min
+  ph_max: !input ph_max
+  orp_min: !input orp_min
+  m_from: !input month_from
+  m_to: !input month_to
+  prio_: !input prio
+
+sensor:
+  icon: mdi:pool
+  state: >
+    {% set season = m_from | int <= now().month <= m_to | int %}
+    {% set ph = states(ph_e) | float(none) %}
+    {% set orp = states(orp_e) | float(none) if orp_e else none %}
+    {% set bad = (ph is not none and (ph < ph_min | float or ph > ph_max | float))
+                 or (orp is not none and orp < orp_min | float) %}
+    {{ 'warn' if season and bad else 'hidden' }}
+  attributes:
+    prio: "{{ prio_ | int }}"
+    title: "Pool"
+    value: >
+      {% set ph = states(ph_e) | float(none) %}
+      {% set orp = states(orp_e) | float(none) if orp_e else none %}
+      {% if ph is not none and ph > ph_max | float %}pH zu hoch {{ ('%.1f' | format(ph)) | replace('.', ',') }}
+      {% elif ph is not none and ph < ph_min | float %}pH zu niedrig {{ ('%.1f' | format(ph)) | replace('.', ',') }}
+      {% elif orp is not none and orp < orp_min | float %}Chlor zu wenig{% endif %}
+    detail: >
+      {% set t = [] %}
+      {% set ph = states(ph_e) | float(none) %}
+      {% set orp = states(orp_e) | float(none) if orp_e else none %}
+      {% set w = states(temp_e) | float(none) if temp_e else none %}
+      {% if ph is not none %}{% set t = t + ['pH ' ~ ('%.1f' | format(ph)) | replace('.', ',')] %}{% endif %}
+      {% if orp is not none %}{% set t = t + ['Redox ' ~ (orp | int) ~ ' mV'] %}{% endif %}
+      {% if w is not none %}{% set t = t + [(w | round(0) | int) ~ '°'] %}{% endif %}
+      {{ t | join(' · ') }}
+    progress: -1
+    tap: "none"

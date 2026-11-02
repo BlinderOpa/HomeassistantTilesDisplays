@@ -1,0 +1,98 @@
+blueprint:
+  name: "Wall tiles: 3D printer (Moonraker)"
+  description: >
+    Tile for a Klipper/Moonraker printer. Mode "progress": visible while printing (info)
+    or paused (warn) with time left, layer, ETA and progress bar.
+    Mode "error": red alarm tile while the print or the printer is in an error state.
+    Create one entity per mode.
+  domain: template
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/template/wall_tiles/tile_3d_printer.yaml
+  input:
+    mode:
+      name: Mode
+      default: progress
+      selector: {select: {options: [progress, error]}}
+    print_state:
+      name: Current print state (standby/printing/paused/complete/cancelled/error)
+      selector: {entity: {domain: sensor}}
+    printer_state:
+      name: Printer state (ready/startup/shutdown/error)
+      selector: {entity: {domain: sensor}}
+    time_left:
+      name: Print time left
+      default: ""
+      selector: {entity: {domain: sensor}}
+    eta:
+      name: Print ETA (timestamp)
+      default: ""
+      selector: {entity: {domain: sensor}}
+    progress:
+      name: Progress %
+      default: ""
+      selector: {entity: {domain: sensor}}
+    current_layer:
+      name: Current layer
+      default: ""
+      selector: {entity: {domain: sensor}}
+    total_layer:
+      name: Total layers
+      default: ""
+      selector: {entity: {domain: sensor}}
+    message:
+      name: Printer message (error text)
+      default: ""
+      selector: {entity: {domain: sensor}}
+
+variables:
+  mode_: !input mode
+  ps: !input print_state
+  prs: !input printer_state
+  tl: !input time_left
+  et: !input eta
+  pg: !input progress
+  cl: !input current_layer
+  tly: !input total_layer
+  msg: !input message
+
+sensor:
+  icon: "{{ 'mdi:printer-3d-nozzle-alert' if mode_ == 'error' else 'mdi:printer-3d' }}"
+  state: >
+    {% set s = states(ps) %}
+    {% if mode_ == 'error' %}
+      {{ 'alarm' if s == 'error' or states(prs) in ['error', 'shutdown'] else 'hidden' }}
+    {% elif s == 'printing' %}info
+    {% elif s == 'paused' %}warn
+    {% else %}hidden{% endif %}
+  attributes:
+    prio: "{{ 3 if mode_ == 'error' else 31 }}"
+    title: >
+      {{ '3D-Druck Pause' if mode_ != 'error' and is_state(ps, 'paused') else '3D-Drucker' }}
+    value: >
+      {% if mode_ == 'error' %}Fehler
+      {% else %}
+        {% set r = states(tl) if tl else '' %}
+        {% if r | is_number and r | float > 0 %}
+          {% set u = state_attr(tl, 'unit_of_measurement') | default('h', true) %}
+          {% set m = (r | float * {'s': 1/60, 'min': 1, 'h': 60, 'd': 1440}.get(u, 60)) | round(0) | int %}
+          {% if m >= 60 %}noch {{ m // 60 }}:{{ '%02d' | format(m % 60) }}{% else %}noch {{ m }} min{% endif %}
+        {% else %}druckt{% endif %}
+      {% endif %}
+    detail: >
+      {% if mode_ == 'error' %}
+        {% set m = states(msg) if msg else '' %}
+        {{ 'Bitte prüfen' if m in ['unknown', 'unavailable', ''] else m }}
+      {% else %}
+        {% set parts = [] %}
+        {% set l = states(cl) | int(0) if cl else 0 %}
+        {% set lt = states(tly) | float(0) | int if tly else 0 %}
+        {% if lt > 0 %}{% set parts = parts + ['Schicht ' ~ l ~ '/' ~ lt] %}{% endif %}
+        {% set e = states(et) if et else '' %}
+        {% if e not in ['unknown', 'unavailable', ''] and as_datetime(e) is not none %}
+          {% set parts = parts + ['fertig ' ~ as_local(as_datetime(e)).strftime('%H:%M')] %}
+        {% endif %}
+        {{ parts | join(' · ') }}
+      {% endif %}
+    progress: >
+      {% set p = states(pg) if pg and mode_ != 'error' else '' %}
+      {{ p | float | round(0) | int if p | is_number else -1 }}
+    tap: "none"

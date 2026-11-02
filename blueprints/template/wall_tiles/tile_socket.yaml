@@ -1,0 +1,91 @@
+blueprint:
+  name: "Wall tiles: smart plug tile"
+  description: >
+    A tile for a switch / smart plug. Shows on/off and the power. Tapping the tile
+    toggles the switch. Optionally only visible while the switch is on.
+    Name the entity "Tile <something>" so it becomes sensor.tile_<something>,
+    and give it the label "Display" in the UI.
+  domain: template
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/template/wall_tiles/tile_socket.yaml
+  input:
+    switch_entity:
+      name: Switch
+      selector:
+        entity:
+          domain: switch
+    power_entity:
+      name: Power sensor (optional)
+      default: ""
+      selector:
+        entity:
+          domain: sensor
+          device_class: power
+    title:
+      name: Title on the tile
+      default: "Steckdose"
+      selector:
+        text:
+    detail:
+      name: Detail text
+      default: ""
+      selector:
+        text:
+    only_when_on:
+      name: Only visible while on
+      default: false
+      selector:
+        boolean:
+    charging_watts:
+      name: "Charging threshold (W)"
+      description: "Above this power the tile says 'lädt', below 'an · voll'. 0 = just show the power."
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 500
+          unit_of_measurement: W
+    prio:
+      name: Priority (smaller = further up)
+      default: 50
+      selector:
+        number:
+          min: 0
+          max: 99
+    icon:
+      name: Icon
+      default: "mdi:power-plug"
+      selector:
+        icon:
+
+variables:
+  sw: !input switch_entity
+  pw: !input power_entity
+  title_: !input title
+  detail_: !input detail
+  only_on: !input only_when_on
+  limit: !input charging_watts
+  prio_: !input prio
+  icon_: !input icon
+
+sensor:
+  icon: "{{ icon_ }}"
+  state: >
+    {% set s = states(sw) %}
+    {% if only_on and s != 'on' %}hidden
+    {% elif s in ['on', 'off'] %}{{ s }}
+    {% else %}warn{% endif %}
+  attributes:
+    prio: "{{ prio_ | int }}"
+    title: "{{ title_ }}"
+    value: >
+      {% set s = states(sw) %}
+      {% set w = states(pw) | float(0) if pw else 0 %}
+      {% if s == 'off' %}aus
+      {% elif s != 'on' %}nicht erreichbar
+      {% elif limit | float(0) > 0 %}{{ ('lädt · ' ~ ((w / 10) | round(0) | int * 10) ~ ' W') if w >= limit | float else 'an · voll' }}
+      {% elif pw %}an · {{ w | round(0) | int }} W
+      {% else %}an{% endif %}
+    detail: "{{ detail_ }}"
+    progress: -1
+    tap: "toggle"
+    entity: "{{ sw }}"

@@ -1,0 +1,32 @@
+blueprint:
+  name: "Wall tiles: appliance unloaded"
+  description: >
+    Clears the done-flag and optionally presses a button of the appliance
+    (e.g. Miele/Home Connect "mark as unloaded"). Run by the tile tap or a voice confirmation.
+  domain: script
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/script/wall_tiles/appliance_unloaded.yaml
+  input:
+    flag_entity:
+      name: Done flag (input_boolean helper)
+      selector: {entity: {domain: input_boolean}}
+    button_entity:
+      name: Button to press (optional)
+      default: ""
+      selector: {entity: {domain: button}}
+
+mode: single
+
+variables:
+  flag: !input flag_entity
+  btn: !input button_entity
+
+sequence:
+  - action: input_boolean.turn_off
+    target:
+      entity_id: "{{ flag }}"
+  - if: "{{ btn != '' }}"
+    then:
+      - action: button.press
+        continue_on_error: true
+        target:
+          entity_id: "{{ btn }}"

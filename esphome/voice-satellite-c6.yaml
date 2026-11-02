@@ -1,0 +1,1994 @@
+# Part of ha-wall-tiles – https://github.com/BlinderOpa/HomeassistantTilesDisplays (MIT)
+# Secrets: copy esphome/secrets.example.yaml to secrets.yaml and fill it in.
+# Comments in this file are German (original project language).
+# Sprachsatellit C6 - Waveshare ESP32-C6-Touch-LCD-1.83
+# Umsetzung der Schnittstelle_Displays.md (v1.4) für den C6:
+#   - Aktion show_answer   (title, value, detail, status, icon, duration)
+#   - Aktion show_question (request_id, question, icon, timeout) mit Ja/Nein per Touch
+#   - Aktion cancel_question (request_id)
+#   - Event esphome.display_question_answer (yes | no | timeout | cancelled)
+#   - Event esphome.display_ready beim Verbinden mit Home Assistant
+#   - Aktion set_tiles (Schnittstelle 4.2, v1.5): Kachel im Ruhezustand, Wischen
+#     blättert, ohne Icon. Tippen auf die Kachel sendet esphome.display_tap
+#     (wie am 7"-Display; HA entscheidet, was passiert).
+#   Nicht für den C6 vorgesehen: Wetter-Grundansicht 4.5 (nur 7"-Display).
+#   Aus v1.3 übernommen: die Wetter-Icons, weil Sprachantworten zum Wetter sie
+#   schicken können; die übrigen neuen Icons sind Kachel-Icons und fehlen hier
+#   (unbekanntes Icon wird zu "information").
+# Betriebsart: Push to Assistant (kein Wake Word)
+#   - Nur der Knopf "Sprechen" oben oder die BOOT-Taste startet den Sprachassistenten
+#   - Solange der Assistent aktiv ist, steht oben der Knopf "Abbrechen"
+#   - "Warte auf Befehl..." erscheint nur bei aktivem Assistenten
+#   - Unten: im Ruhezustand die aktuelle Kachel, Wischen links/rechts blättert
+#   - Lautstärke per Schieberegler in Home Assistant
+# Pins gegen Pinout-Grafik und Schaltplan geprüft.
+# Nicht eingebunden: SD-Karte (SPI: MOSI=GPIO2, SCK=GPIO1, MISO=GPIO16,
+#   CS=GPIO17, gleicher Bus wie das Display) und PMIC AXP2101 (I2C, läuft mit
+#   Standardwerten).
+# Die Icons (MDI) lädt ESPHome beim Kompilieren aus dem Internet.
+# Nicht gegen ESPHome 2026.10 kompiliert.
+
+substitutions:
+  # Override these in your own device file (see esphome/examples/), so the
+  # device keeps its existing name and entity ids in Home Assistant.
+  node_name: voice-satellite-c6
+  friendly_name: ${friendly_name}
+  # Every device should have its own key. Default: secret "api_encryption_key".
+  api_key: !secret api_encryption_key
+
+esphome:
+  name: ${node_name}
+  friendly_name: "Voice Satellite C6"
+  on_boot:
+    - priority: 600
+      then:
+        - light.turn_on:
+            id: lcd_backlight
+            brightness: 100%
+        - output.turn_on: pa_enable
+    - priority: -100
+      then:
+        - pcf85063.read_time:
+        # gespeicherte Lautstärke an den ES8311 übergeben
+        - audio_dac.set_volume:
+            id: my_es8311
+            volume: !lambda 'return id(speaker_volume).state / 100.0f;'
+
+esp32:
+  board: esp32-c6-devkitc-1
+  variant: esp32c6
+  framework:
+    type: esp-idf
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  on_connect:
+    - lambda: 'id(status_text) = "WiFi verbunden...";'
+    - lvgl.widget.refresh: status_label
+
+ota:
+  - platform: esphome
+    encryption:   # nutzt den API-Schlüssel (ESPHome ab 2026.9)
+
+api:
+  encryption:
+    key: ${api_key}
+  on_client_connected:
+    - lambda: 'id(status_text) = "Bereit";'
+    - script.execute: apply_ui
+    # Schnittstelle 4.4: Home Assistant weiß, dass das Gerät (wieder) da ist
+    - homeassistant.event:
+        event: esphome.display_ready
+        data:
+          device: ${node_name}
+  on_client_disconnected:
+    - script.execute: cancel_assistant
+    - lambda: 'id(status_text) = "Keine Verbindung";'
+    - script.execute: apply_ui
+  actions:
+    # Schnittstelle 2: einmalige Antwort anzeigen
+    # HA: esphome.voice_satellite_c6_show_answer (immer über script.display_answer)
+    - action: show_answer
+      variables:
+        title: string
+        value: string
+        detail: string
+        status: string
+        icon: string
+        duration: int
+      then:
+        - script.execute:
+            id: show_answer_request
+            a_title: !lambda 'return title;'
+            a_value: !lambda 'return value;'
+            a_detail: !lambda 'return detail;'
+            a_status: !lambda 'return status;'
+            a_icon: !lambda 'return icon;'
+            a_duration: !lambda 'return duration;'
+
+    # Schnittstelle 3: Ja/Nein-Frage anzeigen
+    - action: show_question
+      variables:
+        request_id: string
+        question: string
+        icon: string
+        timeout: int
+      then:
+        - script.execute:
+            id: display_question
+            q_id: !lambda 'return request_id;'
+            q_text: !lambda 'return question;'
+            q_icon: !lambda 'return icon;'
+            q_timeout: !lambda 'return timeout;'
+
+    - action: cancel_question
+      variables:
+        request_id: string
+      then:
+        - script.execute:
+            id: cancel_question_request
+            q_id: !lambda 'return request_id;'
+
+    # Schnittstelle 4.2: Kachelliste als JSON-Array (wie beim 7"-Display)
+    - action: set_tiles
+      variables:
+        tiles: string
+      then:
+        - script.execute:
+            id: set_tiles_request
+            t_json: !lambda 'return tiles;'
+
+logger:
+  level: VERBOSE
+  logs:
+    wifi: DEBUG         # sonst steht das WLAN-Passwort im Log
+    wifi_esp32: DEBUG
+    cst816.touchscreen: WARN
+    touchscreen: WARN
+    qmi8658: WARN
+    sensor: WARN
+    i2c: WARN
+    motion: WARN
+    lvgl: WARN
+    voice_assistant: DEBUG
+    i2s_audio: DEBUG
+    es7210: DEBUG
+
+debug:
+  update_interval: 30s
+
+globals:
+  - id: status_text
+    type: std::string
+    restore_value: false
+    initial_value: '"Bootet..."'
+
+  # Betriebszustand
+  - id: assistant_active
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: answer_active
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: question_active
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
+  # Text im unteren Bereich (gesprochener Satz oder Frage)
+  - id: response_text
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+
+  # aktuelle Antwort (show_answer)
+  - id: answer_title
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+  - id: answer_value
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+  - id: answer_detail
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+  - id: answer_status
+    type: std::string
+    restore_value: false
+    initial_value: '"info"'
+  - id: answer_icon
+    type: std::string
+    restore_value: false
+    initial_value: '"information"'
+
+  # aktuelle Frage (show_question)
+  - id: question_request_id
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+
+  # Kacheln (set_tiles): ein String pro Feld, Einträge getrennt durch 0x1F
+  - id: tile_stati
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+  - id: tile_titles
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+  - id: tile_values
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+  - id: tile_details
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+  - id: tile_ids
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+  - id: tile_taps
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+  - id: cur_tile_id
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+  - id: cur_tile_tap
+    type: std::string
+    restore_value: false
+    initial_value: '"none"'
+  - id: tile_count
+    type: int
+    restore_value: false
+    initial_value: '0'
+  - id: tile_idx
+    type: int
+    restore_value: false
+    initial_value: '0'
+  - id: tile_mode
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: tile_counter_text
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+  # Statusfarbe für den Rahmen: alarm | warn | ok | info | on | off | none
+  - id: border_status
+    type: std::string
+    restore_value: false
+    initial_value: '"none"'
+  # Wischerkennung
+  - id: touch_on
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: touch_x0
+    type: int
+    restore_value: false
+    initial_value: '0'
+  - id: touch_xl
+    type: int
+    restore_value: false
+    initial_value: '0'
+  - id: touch_y0
+    type: int
+    restore_value: false
+    initial_value: '0'
+
+  # Antwort, die während einer Sprachausgabe eintraf (wird danach angezeigt)
+  - id: pending_answer
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: pending_title
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+  - id: pending_value
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+  - id: pending_detail
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+  - id: pending_status
+    type: std::string
+    restore_value: false
+    initial_value: '"info"'
+  - id: pending_icon
+    type: std::string
+    restore_value: false
+    initial_value: '"information"'
+  - id: pending_duration
+    type: int
+    restore_value: false
+    initial_value: '0'
+
+# ----------------------------------------------------------------------------
+# I2C Bus (SDA = GPIO 7, SCL = GPIO 8)
+# Adressen: ES8311 0x18, ES7210 0x40, QMI8658 0x6B, PCF85063 0x51,
+#           CST816D 0x15, AXP2101 0x34
+# ----------------------------------------------------------------------------
+i2c:
+  - id: bus_a
+    sda: GPIO7
+    scl: GPIO8
+    scan: true
+    frequency: 40kHz
+
+# ----------------------------------------------------------------------------
+# SPI Bus für das Display (CLK = GPIO 1, MOSI = GPIO 2)
+# ----------------------------------------------------------------------------
+spi:
+  id: spi_bus
+  clk_pin: GPIO1
+  mosi_pin: GPIO2
+
+# ----------------------------------------------------------------------------
+# Ausgänge (Hintergrundbeleuchtung & Audio-Verstärker PA_CTRL auf GPIO 0)
+# ----------------------------------------------------------------------------
+output:
+  - platform: ledc
+    pin: GPIO6
+    id: backlight_pwm
+    frequency: 1000Hz
+  - platform: gpio
+    pin: GPIO0
+    id: pa_enable
+
+light:
+  - platform: monochromatic
+    output: backlight_pwm
+    name: "Display Hintergrundbeleuchtung"
+    id: lcd_backlight
+    restore_mode: ALWAYS_ON
+
+# ----------------------------------------------------------------------------
+# Display Konfiguration (CS = GPIO 5, DC = GPIO 3, RST = GPIO 4)
+# ----------------------------------------------------------------------------
+display:
+  - platform: ili9xxx
+    model: ST7789V
+    id: my_display
+    spi_id: spi_bus
+    cs_pin: GPIO5
+    dc_pin: GPIO3
+    reset_pin: GPIO4
+    rotation: 0
+    data_rate: 40MHz
+    invert_colors: true
+    dimensions:
+      width: 240
+      height: 284
+
+# ----------------------------------------------------------------------------
+# Touchscreen (Interrupt = GPIO 11, Reset = GPIO 4 gemeinsam mit dem Display)
+# Kein Start per Berührung mehr (Knopf "Sprechen" oben). Wischen links/rechts
+# blättert in der Kachelansicht; erkannt über Start- und Endposition.
+# ----------------------------------------------------------------------------
+touchscreen:
+  platform: cst816
+  id: my_touch
+  i2c_id: bus_a
+  interrupt_pin: GPIO11
+  on_update:
+    - lambda: |-
+        if (touches.empty()) return;
+        if (!id(touch_on)) {
+          id(touch_on) = true;
+          id(touch_x0) = touches[0].x;
+          id(touch_y0) = touches[0].y;
+        }
+        id(touch_xl) = touches[0].x;
+  on_release:
+    - lambda: 'id(touch_on) = false;'
+    - script.execute:
+        id: tile_swipe
+        dx: !lambda 'return id(touch_xl) - id(touch_x0);'
+
+# ----------------------------------------------------------------------------
+# Audio: I2S (MCLK = GPIO 19, SCLK/BCLK = GPIO 20, LRCK = GPIO 22),
+# ES8311 DAC (Lautsprecher, DSDIN = GPIO 23) und
+# ES7210 ADC (Mikrofon, ASDOUT = GPIO 21)
+# ----------------------------------------------------------------------------
+i2s_audio:
+  - id: i2s_audio_bus
+    i2s_lrclk_pin: GPIO22
+    i2s_bclk_pin: GPIO20
+    i2s_mclk_pin: GPIO19
+
+audio_dac:
+  - platform: es8311
+    id: my_es8311
+    address: 0x18
+    i2c_id: bus_a
+
+audio_adc:
+  - platform: es7210
+    id: my_es7210
+    address: 0x40
+    i2c_id: bus_a
+    mic_gain: 24 dB
+
+speaker:
+  - platform: i2s_audio
+    id: board_speaker
+    i2s_audio_id: i2s_audio_bus
+    i2s_dout_pin: GPIO23
+    dac_type: external
+    audio_dac: my_es8311
+
+microphone:
+  - platform: i2s_audio
+    id: board_mic
+    i2s_audio_id: i2s_audio_bus
+    i2s_din_pin: GPIO21
+    adc_type: external
+
+# ----------------------------------------------------------------------------
+# Echtzeituhr PCF85063 (Interrupt = GPIO 15, wird nicht genutzt)
+# ----------------------------------------------------------------------------
+time:
+  - platform: pcf85063
+    id: rtc_time
+    i2c_id: bus_a
+    update_interval: never
+  - platform: homeassistant
+    id: ha_time
+    on_time_sync:
+      then:
+        - pcf85063.write_time:
+
+# ----------------------------------------------------------------------------
+# 6-Achsen IMU (QMI8658, Interrupt 1 = GPIO 10, wird nicht genutzt)
+# ----------------------------------------------------------------------------
+motion:
+  - platform: qmi8658
+    id: my_qmi8658
+    address: 0x6B
+    i2c_id: bus_a
+
+sensor:
+  - platform: motion
+    type: acceleration_x
+    name: "Beschleunigung X"
+  - platform: motion
+    type: acceleration_y
+    name: "Beschleunigung Y"
+  - platform: motion
+    type: acceleration_z
+    name: "Beschleunigung Z"
+  - platform: motion
+    type: gyroscope_x
+    name: "Gyroskop X"
+  - platform: motion
+    type: gyroscope_y
+    name: "Gyroskop Y"
+  - platform: motion
+    type: gyroscope_z
+    name: "Gyroskop Z"
+  - platform: qmi8658
+    type: temperature
+    name: "IMU Temperatur"
+  # Speicher-Kontrolle (der C6 hat kein PSRAM)
+  - platform: debug
+    free:
+      name: "Freier Heap"
+    block:
+      name: "Größter freier Block"
+
+# ----------------------------------------------------------------------------
+# Tasten
+# ----------------------------------------------------------------------------
+binary_sensor:
+  # BOOT-Taste (GPIO 9): Assistent starten bzw. abbrechen
+  - platform: gpio
+    pin:
+      number: GPIO9
+      inverted: true
+      mode: INPUT_PULLUP
+    name: "BOOT Taste"
+    on_click:
+      - if:
+          condition:
+            lambda: 'return id(assistant_active);'
+          then:
+            - script.execute: cancel_assistant
+          else:
+            - script.execute: start_assistant
+
+  # PWR-Taste (GPIO 18, über SYS_OUT): Polarität im Log prüfen,
+  # bei vertauschtem Zustand "inverted: true" setzen
+  - platform: gpio
+    pin:
+      number: GPIO18
+      mode: INPUT
+    name: "PWR Taste"
+
+# ----------------------------------------------------------------------------
+# Lautstärke-Regler für den Lautsprecher (in Home Assistant als Schieberegler);
+# wirkt über den ES8311 auf alle Ausgaben des Assistenten
+# ----------------------------------------------------------------------------
+number:
+  - platform: template
+    name: "Lautstärke"
+    id: speaker_volume
+    icon: "mdi:volume-high"
+    unit_of_measurement: "%"
+    mode: slider
+    min_value: 0
+    max_value: 100
+    step: 5
+    optimistic: true
+    restore_value: true
+    initial_value: 50
+    set_action:
+      - audio_dac.set_volume:
+          id: my_es8311
+          volume: !lambda 'return x / 100.0f;'
+
+# ----------------------------------------------------------------------------
+# Skripte
+# ----------------------------------------------------------------------------
+script:
+  # Assistent starten (Berührung oder BOOT-Taste)
+  - id: start_assistant
+    mode: single
+    then:
+      - if:
+          condition:
+            api.connected:
+          then:
+            - if:
+                condition:
+                  and:
+                    - not:
+                        voice_assistant.is_running:
+                    - not:
+                        speaker.is_playing: board_speaker
+                then:
+                  - script.execute: abort_question
+                  - script.stop: answer_timer
+                  - script.stop: question_timer
+                  - script.stop: auto_clear
+                  - script.execute: clear_response
+                  - lambda: |-
+                      id(assistant_active) = true;
+                      id(status_text) = "Höre zu...";
+                  - script.execute: apply_response
+                  - voice_assistant.start:
+          else:
+            - lambda: 'id(status_text) = "Keine Verbindung";'
+            - script.execute: apply_ui
+
+  # Assistent und Sprachausgabe beenden (Knopf "Abbrechen")
+  - id: cancel_assistant
+    then:
+      - script.execute: abort_question
+      - voice_assistant.stop:
+      - speaker.stop: board_speaker
+      - script.stop: answer_timer
+      - script.stop: question_timer
+      - script.execute: clear_response
+      - lambda: |-
+          id(assistant_active) = false;
+          id(status_text) = "Bereit";
+      - script.execute: apply_response
+
+  # Status, Hinweistext und Abbrechen-Knopf aktualisieren
+  - id: apply_ui
+    then:
+      - lvgl.widget.refresh: status_label
+      - lvgl.widget.refresh: response_label
+      - if:
+          condition:
+            lambda: 'return id(assistant_active);'
+          then:
+            - lvgl.widget.show: cancel_button
+          else:
+            - lvgl.widget.hide: cancel_button
+      - if:
+          condition:
+            lambda: 'return !id(assistant_active) && !id(question_active);'
+          then:
+            - lvgl.widget.show: start_button
+          else:
+            - lvgl.widget.hide: start_button
+
+  # ---------------------------------------------------------------- Antwort
+  # Eintreffende Antwort: während Assistent oder Sprachausgabe läuft, merken
+  # und danach anzeigen (Schnittstelle 2, Regel für Satelliten)
+  - id: show_answer_request
+    mode: restart
+    parameters:
+      a_title: string
+      a_value: string
+      a_detail: string
+      a_status: string
+      a_icon: string
+      a_duration: int
+    then:
+      - if:
+          condition:
+            or:
+              - voice_assistant.is_running:
+              - speaker.is_playing: board_speaker
+          then:
+            - lambda: |-
+                id(pending_title) = a_title;
+                id(pending_value) = a_value;
+                id(pending_detail) = a_detail;
+                id(pending_status) = a_status;
+                id(pending_icon) = a_icon;
+                id(pending_duration) = a_duration;
+                id(pending_answer) = true;
+          else:
+            - script.execute:
+                id: display_answer
+                d_title: !lambda 'return a_title;'
+                d_value: !lambda 'return a_value;'
+                d_detail: !lambda 'return a_detail;'
+                d_status: !lambda 'return a_status;'
+                d_icon: !lambda 'return a_icon;'
+                d_duration: !lambda 'return a_duration;'
+
+  # gemerkte Antwort nach dem Ende der Sprachausgabe anzeigen
+  - id: show_pending
+    then:
+      - lambda: 'id(pending_answer) = false;'
+      - script.execute:
+          id: display_answer
+          d_title: !lambda 'return id(pending_title);'
+          d_value: !lambda 'return id(pending_value);'
+          d_detail: !lambda 'return id(pending_detail);'
+          d_status: !lambda 'return id(pending_status);'
+          d_icon: !lambda 'return id(pending_icon);'
+          d_duration: !lambda 'return id(pending_duration);'
+
+  - id: display_answer
+    mode: single
+    parameters:
+      d_title: string
+      d_value: string
+      d_detail: string
+      d_status: string
+      d_icon: string
+      d_duration: int
+    then:
+      - script.execute: abort_question
+      - script.execute:
+          id: set_icon
+          i_name: !lambda 'return d_icon;'
+      - lambda: |-
+          // unbekannter Status wird wie "info" behandelt
+          std::string s = d_status;
+          if (s != "alarm" && s != "warn" && s != "ok" && s != "info" && s != "on" && s != "off") s = "info";
+          id(answer_status) = s;
+          id(answer_title) = d_title;
+          id(answer_value) = d_value;
+          id(answer_detail) = d_detail;
+          id(answer_active) = true;
+          id(question_active) = false;
+      - script.execute: apply_response
+      - script.execute:
+          id: answer_timer
+          t_seconds: !lambda 'return d_duration > 0 ? d_duration : 8;'
+
+  # nach der Anzeigedauer zurück in den Normalzustand
+  - id: answer_timer
+    mode: restart
+    parameters:
+      t_seconds: int
+    then:
+      - delay: !lambda 'return t_seconds * 1000;'
+      - script.execute: clear_response
+
+  # unbekannte Icon-Namen werden zu "information"
+  - id: set_icon
+    parameters:
+      i_name: string
+    then:
+      - lambda: |-
+          static const char *const known[] = {
+            "check", "close", "alert", "information", "help",
+            "trash-can", "train", "washing-machine", "thermometer", "water-alert",
+            "battery-alert", "power-plug", "pool", "door-open", "molecule-co2",
+            "solar-power", "printer", "cart", "wifi", "bicycle-electric", "pump",
+            "calendar", "lightbulb", "fire",
+            "weather-sunny", "weather-night", "weather-partly-cloudy", "weather-cloudy", "weather-rainy", "weather-pouring", "weather-snowy", "weather-snowy-rainy", "weather-fog", "weather-hail", "weather-lightning", "weather-lightning-rainy", "weather-windy"};
+          std::string n = i_name;
+          bool found = false;
+          for (auto k : known) {
+            if (n == k) found = true;
+          }
+          id(answer_icon) = found ? n : std::string("information");
+
+  # ---------------------------------------------------------------- Frage
+  - id: display_question
+    mode: single
+    parameters:
+      q_id: string
+      q_text: string
+      q_icon: string
+      q_timeout: int
+    then:
+      - script.execute: abort_question
+      - script.execute:
+          id: set_icon
+          i_name: !lambda 'return q_icon;'
+      - lambda: |-
+          id(question_request_id) = q_id;
+          id(response_text) = q_text;
+          id(answer_active) = false;
+          id(question_active) = true;
+      - script.execute: apply_response
+      - script.execute:
+          id: question_timer
+          t_seconds: !lambda 'return q_timeout > 0 ? q_timeout : 30;'
+
+  - id: question_timer
+    mode: restart
+    parameters:
+      t_seconds: int
+    then:
+      - delay: !lambda 'return t_seconds * 1000;'
+      - script.execute:
+          id: answer_question
+          antwort: "timeout"
+
+  # genau ein Event pro Frage (yes | no | timeout | cancelled)
+  - id: answer_question
+    mode: single
+    parameters:
+      antwort: string
+    then:
+      - if:
+          condition:
+            lambda: 'return id(question_active);'
+          then:
+            - lambda: 'id(question_active) = false;'
+            - script.stop: question_timer
+            - homeassistant.event:
+                event: esphome.display_question_answer
+                data:
+                  device: ${node_name}
+                data_template:
+                  request_id: "{{ req }}"
+                  answer: "{{ ans }}"
+                variables:
+                  req: !lambda 'return id(question_request_id);'
+                  ans: !lambda 'return antwort;'
+            - script.execute: clear_response
+
+  # offene Frage verwerfen (z. B. neue Antwort, neue Frage, Assistent gestartet)
+  - id: abort_question
+    then:
+      - if:
+          condition:
+            lambda: 'return id(question_active);'
+          then:
+            - script.execute:
+                id: answer_question
+                antwort: "cancelled"
+
+  # cancel_question aus Home Assistant
+  - id: cancel_question_request
+    parameters:
+      q_id: string
+    then:
+      - if:
+          condition:
+            lambda: 'return id(question_active) && id(question_request_id) == q_id;'
+          then:
+            - script.execute:
+                id: answer_question
+                antwort: "cancelled"
+
+  # ---------------------------------------------------------------- Anzeige
+  # Welche Teile im unteren Bereich sichtbar sind
+  - id: apply_response
+    then:
+      - lambda: |-
+          // Kachelansicht nur im Ruhezustand und wenn Kacheln vorhanden sind
+          id(tile_mode) = !id(answer_active) && !id(question_active) &&
+                          id(response_text).empty() && !id(assistant_active) &&
+                          id(tile_count) > 0;
+          if (id(tile_mode)) {
+            auto nth = [](const std::string &s, int k) -> std::string {
+              size_t a = 0;
+              for (int j = 0; j < k; j++) {
+                a = s.find('\x1f', a);
+                if (a == std::string::npos) return "";
+                a++;
+              }
+              size_t b = s.find('\x1f', a);
+              return s.substr(a, b == std::string::npos ? std::string::npos : b - a);
+            };
+            int k = id(tile_idx);
+            if (k < 0 || k >= id(tile_count)) { k = 0; id(tile_idx) = 0; }
+            id(answer_title) = nth(id(tile_titles), k);
+            id(answer_value) = nth(id(tile_values), k);
+            id(answer_detail) = nth(id(tile_details), k);
+            id(border_status) = nth(id(tile_stati), k);
+            id(cur_tile_id) = nth(id(tile_ids), k);
+            id(cur_tile_tap) = nth(id(tile_taps), k);
+            if (id(cur_tile_tap).empty()) id(cur_tile_tap) = "none";
+            char buf[16];
+            snprintf(buf, sizeof(buf), "< %d / %d >", k + 1, id(tile_count));
+            id(tile_counter_text) = buf;
+          } else if (id(answer_active)) {
+            id(border_status) = id(answer_status);
+            id(cur_tile_tap) = "none";
+          } else {
+            id(border_status) = "none";
+            id(cur_tile_tap) = "none";
+          }
+      - lvgl.widget.refresh: answer_title_label
+      - lvgl.widget.refresh: answer_value_label
+      - lvgl.widget.refresh: answer_detail_label
+      - lvgl.widget.refresh: response_label
+      - lvgl.widget.refresh: tile_count_label
+      - if:
+          condition:
+            lambda: 'return id(tile_mode);'
+          then:
+            - lvgl.widget.hide: icon_slot
+            - lvgl.widget.show: answer_title_label
+            - lvgl.widget.show: answer_value_label
+            - if:
+                condition:
+                  lambda: 'return !id(answer_detail).empty();'
+                then:
+                  - lvgl.widget.show: answer_detail_label
+                else:
+                  - lvgl.widget.hide: answer_detail_label
+            - lvgl.widget.hide: response_label
+            - lvgl.widget.hide: question_row
+            - if:
+                condition:
+                  lambda: 'return id(tile_count) > 1;'
+                then:
+                  - lvgl.widget.show: tile_count_label
+                else:
+                  - lvgl.widget.hide: tile_count_label
+          else:
+            - lvgl.widget.hide: tile_count_label
+            - if:
+                condition:
+                  lambda: 'return id(answer_active);'
+                then:
+                  - lvgl.widget.show: icon_slot
+                  - lvgl.widget.show: answer_title_label
+                  - lvgl.widget.show: answer_value_label
+                  - if:
+                      condition:
+                        lambda: 'return !id(answer_detail).empty();'
+                      then:
+                        - lvgl.widget.show: answer_detail_label
+                      else:
+                        - lvgl.widget.hide: answer_detail_label
+                  - lvgl.widget.hide: response_label
+                  - lvgl.widget.hide: question_row
+                else:
+                  - lvgl.widget.hide: answer_title_label
+                  - lvgl.widget.hide: answer_value_label
+                  - lvgl.widget.hide: answer_detail_label
+                  - lvgl.widget.show: response_label
+                  - if:
+                      condition:
+                        lambda: 'return id(question_active);'
+                      then:
+                        - lvgl.widget.show: icon_slot
+                        - lvgl.widget.show: question_row
+                      else:
+                        - lvgl.widget.hide: icon_slot
+                        - lvgl.widget.hide: question_row
+      - script.execute: apply_border
+      - script.execute: apply_icon
+      - script.execute: apply_ui
+
+  # Kachelliste empfangen (Schnittstelle 4.2): JSON-Array, hier ohne JSON-Bibliothek
+  # eingelesen; bis zu 12 Einträge, Felder status, title, value, detail
+  - id: set_tiles_request
+    mode: restart
+    parameters:
+      t_json: string
+    then:
+      - lambda: |-
+          const std::string &s = t_json;
+          const size_t n = s.size();
+          // Zeichen, die die Schrift nicht hat, durch Ersatz austauschen
+          auto sanitize = [](const std::string &in) -> std::string {
+            std::string out;
+            size_t p = 0;
+            while (p < in.size()) {
+              unsigned char c = in[p];
+              unsigned cp = 0;
+              size_t len = 1;
+              if (c < 0x80) { cp = c; len = 1; }
+              else if ((c >> 5) == 6) { cp = c & 0x1F; len = 2; }
+              else if ((c >> 4) == 14) { cp = c & 0x0F; len = 3; }
+              else if ((c >> 3) == 30) { cp = c & 0x07; len = 4; }
+              else { out += '?'; p++; continue; }
+              for (size_t q = 1; q < len && p + q < in.size(); q++) cp = (cp << 6) | (in[p + q] & 0x3F);
+              bool ok = (cp >= 0x20 && cp < 0x7F) || (cp >= 0xA0 && cp <= 0xFF) ||
+                        cp == 0x3BC || cp == 0x3A9 || cp == 0x20AC || cp == 0x2122;
+              if (ok) out += in.substr(p, len);
+              else if (cp == 0x2192 || cp == 0x2013 || cp == 0x2014) out += '-';
+              else if (cp == 0x2082) out += '2';
+              else if (cp == 0x201C || cp == 0x201D || cp == 0x201E) out += '"';
+              else if (cp == 0x2018 || cp == 0x2019) out += '\'';
+              else if (cp == 0x2026) out += "...";
+              else if (cp < 0x20) out += ' ';
+              else out += '?';
+              p += len;
+            }
+            return out;
+          };
+          // String ab der öffnenden Anführungszeichen-Position lesen (\", \\, \uXXXX)
+          auto parse_str = [&](size_t &p) -> std::string {
+            std::string out;
+            p++;
+            while (p < n && s[p] != '"') {
+              char c = s[p];
+              if (c == '\\' && p + 1 < n) {
+                char e = s[p + 1];
+                p += 2;
+                if (e == 'u' && p + 4 <= n) {
+                  unsigned cp = strtoul(s.substr(p, 4).c_str(), nullptr, 16);
+                  p += 4;
+                  if (cp < 0x80) out += (char) cp;
+                  else if (cp < 0x800) {
+                    out += (char) (0xC0 | (cp >> 6));
+                    out += (char) (0x80 | (cp & 0x3F));
+                  } else {
+                    out += (char) (0xE0 | (cp >> 12));
+                    out += (char) (0x80 | ((cp >> 6) & 0x3F));
+                    out += (char) (0x80 | (cp & 0x3F));
+                  }
+                } else if (e == 'n' || e == 't') {
+                  out += ' ';
+                } else {
+                  out += e;
+                }
+              } else {
+                out += c;
+                p++;
+              }
+            }
+            p++;
+            return out;
+          };
+          std::string st, ti, va, de, ki, tp;
+          int count = 0;
+          size_t i = 0;
+          while (i < n && count < 12) {
+            size_t o = s.find('{', i);
+            if (o == std::string::npos) break;
+            i = o + 1;
+            std::string status = "info", title, value, detail, kid, tap = "none";
+            while (i < n && s[i] != '}') {
+              if (s[i] == '"') {
+                std::string key = parse_str(i);
+                while (i < n && (s[i] == ' ' || s[i] == ':')) i++;
+                if (i < n && s[i] == '"') {
+                  std::string v = parse_str(i);
+                  if (key == "status") status = v;
+                  else if (key == "title") title = sanitize(v);
+                  else if (key == "value") value = sanitize(v);
+                  else if (key == "detail") detail = sanitize(v);
+                  else if (key == "id") kid = v;
+                  else if (key == "tap") tap = v;
+                } else {
+                  while (i < n && s[i] != ',' && s[i] != '}') i++;
+                }
+              } else {
+                i++;
+              }
+            }
+            i++;
+            if (status != "alarm" && status != "warn" && status != "ok" &&
+                status != "info" && status != "on" && status != "off") status = "info";
+            if (count > 0) { st += '\x1f'; ti += '\x1f'; va += '\x1f'; de += '\x1f'; ki += '\x1f'; tp += '\x1f'; }
+            st += status; ti += title; va += value; de += detail; ki += kid; tp += tap;
+            count++;
+          }
+          id(tile_stati) = st;
+          id(tile_titles) = ti;
+          id(tile_values) = va;
+          id(tile_details) = de;
+          id(tile_ids) = ki;
+          id(tile_taps) = tp;
+          id(tile_count) = count;
+          if (id(tile_idx) >= count) id(tile_idx) = 0;
+      - script.execute: apply_response
+
+  # Berührung losgelassen: Wischen blättert, kurzes Tippen auf die Kachel (unterhalb
+  # der Kopfleiste) sendet esphome.display_tap, sofern die Kachel ein tap hat
+  - id: tile_swipe
+    parameters:
+      dx: int
+    then:
+      - if:
+          condition:
+            lambda: 'return id(tile_mode) && id(tile_count) > 1 && (dx > 40 || dx < -40);'
+          then:
+            - lambda: |-
+                int n = id(tile_count);
+                if (dx < 0) id(tile_idx) = (id(tile_idx) + 1) % n;
+                else id(tile_idx) = (id(tile_idx) + n - 1) % n;
+            - script.execute: apply_response
+      - if:
+          condition:
+            lambda: |-
+              return id(tile_mode) && dx > -15 && dx < 15 && id(touch_y0) > 55 &&
+                     id(cur_tile_tap) != "none" && !id(cur_tile_id).empty();
+          then:
+            # kurzes Aufblitzen als Rückmeldung
+            - lvgl.widget.update:
+                id: answer_box
+                bg_color: "0x444444"
+            - homeassistant.event:
+                event: esphome.display_tap
+                data:
+                  device: ${node_name}
+                data_template:
+                  id: "{{ kid }}"
+                  tap: "{{ ktap }}"
+                variables:
+                  kid: !lambda 'return id(cur_tile_id);'
+                  ktap: !lambda 'return id(cur_tile_tap);'
+            - delay: 150ms
+            - lvgl.widget.update:
+                id: answer_box
+                bg_color: "0x1a1a1a"
+
+  # Rahmen des unteren Bereichs in Statusfarbe (Antwort oder Kachel)
+  - id: apply_border
+    then:
+      - lvgl.widget.update:
+          id: answer_box
+          border_color: "0x333333"
+          border_width: 1
+      - if:
+          condition:
+            lambda: 'return id(border_status) == "alarm";'
+          then:
+            - lvgl.widget.update:
+                id: answer_box
+                border_color: "0xE53935"
+                border_width: 4
+      - if:
+          condition:
+            lambda: 'return id(border_status) == "warn";'
+          then:
+            - lvgl.widget.update:
+                id: answer_box
+                border_color: "0xFB8C00"
+                border_width: 4
+      - if:
+          condition:
+            lambda: 'return id(border_status) == "ok";'
+          then:
+            - lvgl.widget.update:
+                id: answer_box
+                border_color: "0x43A047"
+                border_width: 4
+      - if:
+          condition:
+            lambda: 'return id(border_status) == "info";'
+          then:
+            - lvgl.widget.update:
+                id: answer_box
+                border_color: "0x1E88E5"
+                border_width: 4
+      - if:
+          condition:
+            lambda: 'return id(border_status) == "on";'
+          then:
+            - lvgl.widget.update:
+                id: answer_box
+                border_color: "0xFDD835"
+                border_width: 4
+      - if:
+          condition:
+            lambda: 'return id(border_status) == "off";'
+          then:
+            - lvgl.widget.update:
+                id: answer_box
+                border_color: "0x616161"
+                border_width: 4
+
+  # Statusfarbe (Kreis) und Icon einstellen
+  - id: apply_icon
+    then:
+      - lvgl.widget.hide: circle_alarm
+      - lvgl.widget.hide: circle_warn
+      - lvgl.widget.hide: circle_ok
+      - lvgl.widget.hide: circle_info
+      - lvgl.widget.hide: circle_on
+      - lvgl.widget.hide: circle_off
+      - if:
+          condition:
+            lambda: |-
+              std::string s = id(question_active) ? std::string("info") : id(answer_status);
+              return s == "alarm";
+          then:
+            - lvgl.widget.show: circle_alarm
+      - if:
+          condition:
+            lambda: |-
+              std::string s = id(question_active) ? std::string("info") : id(answer_status);
+              return s == "warn";
+          then:
+            - lvgl.widget.show: circle_warn
+      - if:
+          condition:
+            lambda: |-
+              std::string s = id(question_active) ? std::string("info") : id(answer_status);
+              return s == "ok";
+          then:
+            - lvgl.widget.show: circle_ok
+      - if:
+          condition:
+            lambda: |-
+              std::string s = id(question_active) ? std::string("info") : id(answer_status);
+              return s == "info";
+          then:
+            - lvgl.widget.show: circle_info
+      - if:
+          condition:
+            lambda: |-
+              std::string s = id(question_active) ? std::string("info") : id(answer_status);
+              return s == "on";
+          then:
+            - lvgl.widget.show: circle_on
+      - if:
+          condition:
+            lambda: |-
+              std::string s = id(question_active) ? std::string("info") : id(answer_status);
+              return s == "off";
+          then:
+            - lvgl.widget.show: circle_off
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "check";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_check
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "close";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_close
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "alert";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_alert
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "information";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_information
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "help";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_help
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "trash-can";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_trash_can
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "train";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_train
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "washing-machine";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_washing_machine
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "thermometer";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_thermometer
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "water-alert";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_water_alert
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "battery-alert";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_battery_alert
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "power-plug";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_power_plug
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "pool";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_pool
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "door-open";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_door_open
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "molecule-co2";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_molecule_co2
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "solar-power";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_solar_power
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "printer";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_printer
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "cart";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_cart
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "wifi";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_wifi
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "bicycle-electric";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_bicycle_electric
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "pump";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_pump
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "calendar";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_calendar
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "lightbulb";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_lightbulb
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "fire";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_fire
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "weather-sunny";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_weather_sunny
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "weather-night";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_weather_night
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "weather-partly-cloudy";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_weather_partly_cloudy
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "weather-cloudy";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_weather_cloudy
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "weather-rainy";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_weather_rainy
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "weather-pouring";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_weather_pouring
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "weather-snowy";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_weather_snowy
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "weather-snowy-rainy";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_weather_snowy_rainy
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "weather-fog";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_weather_fog
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "weather-hail";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_weather_hail
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "weather-lightning";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_weather_lightning
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "weather-lightning-rainy";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_weather_lightning_rainy
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "weather-windy";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_weather_windy
+
+  - id: clear_response
+    then:
+      - lambda: |-
+          id(response_text) = "";
+          id(answer_active) = false;
+          id(question_active) = false;
+      - script.execute: apply_response
+
+  # Gesprochenen Satz nach 20 Sekunden ausblenden
+  - id: auto_clear
+    mode: restart
+    then:
+      - delay: 20s
+      - if:
+          condition:
+            lambda: 'return !id(answer_active) && !id(question_active);'
+          then:
+            - script.execute: clear_response
+
+# ----------------------------------------------------------------------------
+# Sprachassistent (ohne Wake Word, wird per Berührung gestartet)
+# ----------------------------------------------------------------------------
+voice_assistant:
+  id: my_voice_assistant
+  speaker: board_speaker
+  microphone:
+    - microphone: board_mic
+  auto_gain: 21dBFS
+  on_listening:
+    - lambda: 'id(status_text) = "Höre zu...";'
+    - lvgl.widget.refresh: status_label
+  on_stt_vad_end:
+    - lambda: 'id(status_text) = "Verstehe...";'
+    - lvgl.widget.refresh: status_label
+  # Antwort liegt vor: ohne eigene Anzeige den gesprochenen Satz anzeigen
+  on_tts_start:
+    - lambda: |-
+        id(status_text) = "Spreche...";
+        if (!id(answer_active) && !id(question_active)) {
+          id(response_text) = x;
+        }
+    - script.execute: apply_response
+    - lvgl.widget.refresh: status_label
+  # Alles fertig: gemerkte Antwort anzeigen, sonst Satz nach 20 s ausblenden
+  on_idle:
+    - lambda: |-
+        id(assistant_active) = false;
+        id(status_text) = "Bereit";
+    - script.execute: apply_response
+    - if:
+        condition:
+          lambda: 'return id(pending_answer);'
+        then:
+          - script.execute: show_pending
+        else:
+          - script.execute: auto_clear
+  on_error:
+    - script.execute:
+        id: display_answer
+        d_title: "Assistent"
+        d_value: !lambda 'return code == "stt-no-text-recognized" ? std::string("Nicht verstanden") : std::string("Fehler");'
+        d_detail: ""
+        d_status: "alarm"
+        d_icon: "close"
+        d_duration: 3
+    - lambda: 'id(status_text) = "Fehler";'
+    - lvgl.widget.refresh: status_label
+    - delay: 3s
+    - lambda: |-
+        id(assistant_active) = false;
+        id(status_text) = "Bereit";
+    - script.execute: apply_response
+
+# ----------------------------------------------------------------------------
+# Icons (Material Design Icons, Namen wie in Schnittstelle 1.2)
+# ----------------------------------------------------------------------------
+image:
+  - file: mdi:check
+    id: img_check
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:close
+    id: img_close
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:alert
+    id: img_alert
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:information
+    id: img_information
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:help
+    id: img_help
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:trash-can
+    id: img_trash_can
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:train
+    id: img_train
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:washing-machine
+    id: img_washing_machine
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:thermometer
+    id: img_thermometer
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:water-alert
+    id: img_water_alert
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:battery-alert
+    id: img_battery_alert
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:power-plug
+    id: img_power_plug
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:pool
+    id: img_pool
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:door-open
+    id: img_door_open
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:molecule-co2
+    id: img_molecule_co2
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:solar-power
+    id: img_solar_power
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:printer
+    id: img_printer
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:cart
+    id: img_cart
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:wifi
+    id: img_wifi
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:bicycle-electric
+    id: img_bicycle_electric
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:pump
+    id: img_pump
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:calendar
+    id: img_calendar
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:lightbulb
+    id: img_lightbulb
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:fire
+    id: img_fire
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:weather-sunny
+    id: img_weather_sunny
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:weather-night
+    id: img_weather_night
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:weather-partly-cloudy
+    id: img_weather_partly_cloudy
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:weather-cloudy
+    id: img_weather_cloudy
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:weather-rainy
+    id: img_weather_rainy
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:weather-pouring
+    id: img_weather_pouring
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:weather-snowy
+    id: img_weather_snowy
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:weather-snowy-rainy
+    id: img_weather_snowy_rainy
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:weather-fog
+    id: img_weather_fog
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:weather-hail
+    id: img_weather_hail
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:weather-lightning
+    id: img_weather_lightning
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:weather-lightning-rainy
+    id: img_weather_lightning_rainy
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:weather-windy
+    id: img_weather_windy
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+
+# ----------------------------------------------------------------------------
+# Fonts mit vollständigen Umlauten und Symbolen
+# ----------------------------------------------------------------------------
+font:
+  - file:
+      type: gfonts
+      family: "Roboto"
+      weight: 400
+      italic: false
+    id: font_roboto_400_14
+    size: 14
+    glyphsets: [GF_Latin_Kernel]
+    ignore_missing_glyphs: true
+    glyphs: ["\U00000020", "\U00000021", "\U00000022", "\U00000023", "\U00000024", "\U00000025", "\U00000026", "\U00000027", "\U00000028", "\U00000029", "\U0000002A", "\U0000002B", "\U0000002C", "\U0000002D", "\U0000002E", "\U0000002F", "\U00000030", "\U00000031", "\U00000032", "\U00000033", "\U00000034", "\U00000035", "\U00000036", "\U00000037", "\U00000038", "\U00000039", "\U0000003A", "\U0000003B", "\U0000003C", "\U0000003D", "\U0000003E", "\U0000003F", "\U00000040", "\U00000041", "\U00000042", "\U00000043", "\U00000044", "\U00000045", "\U00000046", "\U00000047", "\U00000048", "\U00000049", "\U0000004A", "\U0000004B", "\U0000004C", "\U0000004D", "\U0000004E", "\U0000004F", "\U00000050", "\U00000051", "\U00000052", "\U00000053", "\U00000054", "\U00000055", "\U00000056", "\U00000057", "\U00000058", "\U00000059", "\U0000005A", "\U0000005B", "\U0000005C", "\U0000005D", "\U0000005E", "\U0000005F", "\U00000060", "\U00000061", "\U00000062", "\U00000063", "\U00000064", "\U00000065", "\U00000066", "\U00000067", "\U00000068", "\U00000069", "\U0000006A", "\U0000006B", "\U0000006C", "\U0000006D", "\U0000006E", "\U0000006F", "\U00000070", "\U00000071", "\U00000072", "\U00000073", "\U00000074", "\U00000075", "\U00000076", "\U00000077", "\U00000078", "\U00000079", "\U0000007A", "\U0000007B", "\U0000007C", "\U0000007D", "\U0000007E", "\U000000A0", "\U000000A1", "\U000000A2", "\U000000A3", "\U000000A4", "\U000000A5", "\U000000A6", "\U000000A7", "\U000000A8", "\U000000A9", "\U000000AA", "\U000000AB", "\U000000AC", "\U000000AD", "\U000000AE", "\U000000AF", "\U000000B0", "\U000000B1", "\U000000B2", "\U000000B3", "\U000000B4", "\U000000B5", "\U000000B6", "\U000000B7", "\U000000B8", "\U000000B9", "\U000000BA", "\U000000BB", "\U000000BC", "\U000000BD", "\U000000BE", "\U000000BF", "\U000000C0", "\U000000C1", "\U000000C2", "\U000000C3", "\U000000C4", "\U000000C5", "\U000000C6", "\U000000C7", "\U000000C8", "\U000000C9", "\U000000CA", "\U000000CB", "\U000000CC", "\U000000CD", "\U000000CE", "\U000000CF", "\U000000D0", "\U000000D1", "\U000000D2", "\U000000D3", "\U000000D4", "\U000000D5", "\U000000D6", "\U000000D7", "\U000000D8", "\U000000D9", "\U000000DA", "\U000000DB", "\U000000DC", "\U000000DD", "\U000000DE", "\U000000DF", "\U000000E0", "\U000000E1", "\U000000E2", "\U000000E3", "\U000000E4", "\U000000E5", "\U000000E6", "\U000000E7", "\U000000E8", "\U000000E9", "\U000000EA", "\U000000EB", "\U000000EC", "\U000000ED", "\U000000EE", "\U000000EF", "\U000000F0", "\U000000F1", "\U000000F2", "\U000000F3", "\U000000F4", "\U000000F5", "\U000000F6", "\U000000F7", "\U000000F8", "\U000000F9", "\U000000FA", "\U000000FB", "\U000000FC", "\U000000FD", "\U000000FE", "\U000000FF", "\U000003BC", "\U000003A9", "\U000020AC", "\U00002122"]
+  - file:
+      type: gfonts
+      family: "Roboto"
+      weight: 400
+      italic: false
+    id: font_roboto_400_20
+    size: 20
+    glyphsets: [GF_Latin_Kernel]
+    ignore_missing_glyphs: true
+    glyphs: ["\U00000020", "\U00000021", "\U00000022", "\U00000023", "\U00000024", "\U00000025", "\U00000026", "\U00000027", "\U00000028", "\U00000029", "\U0000002A", "\U0000002B", "\U0000002C", "\U0000002D", "\U0000002E", "\U0000002F", "\U00000030", "\U00000031", "\U00000032", "\U00000033", "\U00000034", "\U00000035", "\U00000036", "\U00000037", "\U00000038", "\U00000039", "\U0000003A", "\U0000003B", "\U0000003C", "\U0000003D", "\U0000003E", "\U0000003F", "\U00000040", "\U00000041", "\U00000042", "\U00000043", "\U00000044", "\U00000045", "\U00000046", "\U00000047", "\U00000048", "\U00000049", "\U0000004A", "\U0000004B", "\U0000004C", "\U0000004D", "\U0000004E", "\U0000004F", "\U00000050", "\U00000051", "\U00000052", "\U00000053", "\U00000054", "\U00000055", "\U00000056", "\U00000057", "\U00000058", "\U00000059", "\U0000005A", "\U0000005B", "\U0000005C", "\U0000005D", "\U0000005E", "\U0000005F", "\U00000060", "\U00000061", "\U00000062", "\U00000063", "\U00000064", "\U00000065", "\U00000066", "\U00000067", "\U00000068", "\U00000069", "\U0000006A", "\U0000006B", "\U0000006C", "\U0000006D", "\U0000006E", "\U0000006F", "\U00000070", "\U00000071", "\U00000072", "\U00000073", "\U00000074", "\U00000075", "\U00000076", "\U00000077", "\U00000078", "\U00000079", "\U0000007A", "\U0000007B", "\U0000007C", "\U0000007D", "\U0000007E", "\U000000A0", "\U000000A1", "\U000000A2", "\U000000A3", "\U000000A4", "\U000000A5", "\U000000A6", "\U000000A7", "\U000000A8", "\U000000A9", "\U000000AA", "\U000000AB", "\U000000AC", "\U000000AD", "\U000000AE", "\U000000AF", "\U000000B0", "\U000000B1", "\U000000B2", "\U000000B3", "\U000000B4", "\U000000B5", "\U000000B6", "\U000000B7", "\U000000B8", "\U000000B9", "\U000000BA", "\U000000BB", "\U000000BC", "\U000000BD", "\U000000BE", "\U000000BF", "\U000000C0", "\U000000C1", "\U000000C2", "\U000000C3", "\U000000C4", "\U000000C5", "\U000000C6", "\U000000C7", "\U000000C8", "\U000000C9", "\U000000CA", "\U000000CB", "\U000000CC", "\U000000CD", "\U000000CE", "\U000000CF", "\U000000D0", "\U000000D1", "\U000000D2", "\U000000D3", "\U000000D4", "\U000000D5", "\U000000D6", "\U000000D7", "\U000000D8", "\U000000D9", "\U000000DA", "\U000000DB", "\U000000DC", "\U000000DD", "\U000000DE", "\U000000DF", "\U000000E0", "\U000000E1", "\U000000E2", "\U000000E3", "\U000000E4", "\U000000E5", "\U000000E6", "\U000000E7", "\U000000E8", "\U000000E9", "\U000000EA", "\U000000EB", "\U000000EC", "\U000000ED", "\U000000EE", "\U000000EF", "\U000000F0", "\U000000F1", "\U000000F2", "\U000000F3", "\U000000F4", "\U000000F5", "\U000000F6", "\U000000F7", "\U000000F8", "\U000000F9", "\U000000FA", "\U000000FB", "\U000000FC", "\U000000FD", "\U000000FE", "\U000000FF", "\U000003BC", "\U000003A9", "\U000020AC", "\U00002122"]
+  - file:
+      type: gfonts
+      family: "Roboto"
+      weight: 400
+      italic: false
+    id: font_roboto_400_28
+    size: 28
+    glyphsets: [GF_Latin_Kernel]
+    ignore_missing_glyphs: true
+    glyphs: ["\U00000020", "\U00000021", "\U00000022", "\U00000023", "\U00000024", "\U00000025", "\U00000026", "\U00000027", "\U00000028", "\U00000029", "\U0000002A", "\U0000002B", "\U0000002C", "\U0000002D", "\U0000002E", "\U0000002F", "\U00000030", "\U00000031", "\U00000032", "\U00000033", "\U00000034", "\U00000035", "\U00000036", "\U00000037", "\U00000038", "\U00000039", "\U0000003A", "\U0000003B", "\U0000003C", "\U0000003D", "\U0000003E", "\U0000003F", "\U00000040", "\U00000041", "\U00000042", "\U00000043", "\U00000044", "\U00000045", "\U00000046", "\U00000047", "\U00000048", "\U00000049", "\U0000004A", "\U0000004B", "\U0000004C", "\U0000004D", "\U0000004E", "\U0000004F", "\U00000050", "\U00000051", "\U00000052", "\U00000053", "\U00000054", "\U00000055", "\U00000056", "\U00000057", "\U00000058", "\U00000059", "\U0000005A", "\U0000005B", "\U0000005C", "\U0000005D", "\U0000005E", "\U0000005F", "\U00000060", "\U00000061", "\U00000062", "\U00000063", "\U00000064", "\U00000065", "\U00000066", "\U00000067", "\U00000068", "\U00000069", "\U0000006A", "\U0000006B", "\U0000006C", "\U0000006D", "\U0000006E", "\U0000006F", "\U00000070", "\U00000071", "\U00000072", "\U00000073", "\U00000074", "\U00000075", "\U00000076", "\U00000077", "\U00000078", "\U00000079", "\U0000007A", "\U0000007B", "\U0000007C", "\U0000007D", "\U0000007E", "\U000000A0", "\U000000A1", "\U000000A2", "\U000000A3", "\U000000A4", "\U000000A5", "\U000000A6", "\U000000A7", "\U000000A8", "\U000000A9", "\U000000AA", "\U000000AB", "\U000000AC", "\U000000AD", "\U000000AE", "\U000000AF", "\U000000B0", "\U000000B1", "\U000000B2", "\U000000B3", "\U000000B4", "\U000000B5", "\U000000B6", "\U000000B7", "\U000000B8", "\U000000B9", "\U000000BA", "\U000000BB", "\U000000BC", "\U000000BD", "\U000000BE", "\U000000BF", "\U000000C0", "\U000000C1", "\U000000C2", "\U000000C3", "\U000000C4", "\U000000C5", "\U000000C6", "\U000000C7", "\U000000C8", "\U000000C9", "\U000000CA", "\U000000CB", "\U000000CC", "\U000000CD", "\U000000CE", "\U000000CF", "\U000000D0", "\U000000D1", "\U000000D2", "\U000000D3", "\U000000D4", "\U000000D5", "\U000000D6", "\U000000D7", "\U000000D8", "\U000000D9", "\U000000DA", "\U000000DB", "\U000000DC", "\U000000DD", "\U000000DE", "\U000000DF", "\U000000E0", "\U000000E1", "\U000000E2", "\U000000E3", "\U000000E4", "\U000000E5", "\U000000E6", "\U000000E7", "\U000000E8", "\U000000E9", "\U000000EA", "\U000000EB", "\U000000EC", "\U000000ED", "\U000000EE", "\U000000EF", "\U000000F0", "\U000000F1", "\U000000F2", "\U000000F3", "\U000000F4", "\U000000F5", "\U000000F6", "\U000000F7", "\U000000F8", "\U000000F9", "\U000000FA", "\U000000FB", "\U000000FC", "\U000000FD", "\U000000FE", "\U000000FF", "\U000003BC", "\U000003A9", "\U000020AC", "\U00002122"]
+
+# ----------------------------------------------------------------------------
+# LVGL Benutzeroberfläche (240 x 284)
+# ----------------------------------------------------------------------------
+lvgl:
+  id: my_lvgl
+  log_level: WARN
+  buffer_size: 25%  # kein PSRAM: kleinerer Zeichenpuffer spart internen Speicher
+  bg_color: "0x000000"
+  displays:
+    - my_display
+  touchscreens:
+    - touchscreen_id: my_touch
+  pages:
+    - id: page_0
+      layout:
+        type: flex
+        flex_flow: column
+        pad_row: 10
+        pad_column: 10
+        flex_align_main: center
+        flex_align_cross: center
+
+      widgets:
+        # Oberer Bereich: Status, bei aktivem Assistenten zusätzlich "Abbrechen"
+        - container:
+            margin_left: 10
+            width: 220
+            height: 40
+            bg_color: "0x111111"
+            border_width: 0
+            layout:
+              type: flex
+              flex_flow: row
+              flex_align_main: space_between
+              flex_align_cross: center
+            widgets:
+              - label:
+                  id: status_label
+                  text: !lambda 'return id(status_text).c_str();'
+                  text_color: "0x00FF00"
+                  text_font: font_roboto_400_14
+              - button:
+                  id: start_button
+                  width: 100
+                  height: 32
+                  radius: 6
+                  bg_color: "0x2E7D32"
+                  on_click:
+                    - script.execute: start_assistant
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "Sprechen"
+                        text_color: "0xFFFFFF"
+                        text_font: font_roboto_400_14
+              - button:
+                  id: cancel_button
+                  hidden: true
+                  width: 100
+                  height: 32
+                  radius: 6
+                  bg_color: "0xB71C1C"
+                  on_click:
+                    - script.execute: cancel_assistant
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "Abbrechen"
+                        text_color: "0xFFFFFF"
+                        text_font: font_roboto_400_14
+
+        # Unterer Bereich: Antwort (Icon, Titel, Wert, Detail), gesprochener
+        # Satz bzw. Frage mit Ja/Nein
+        - container:
+            id: answer_box
+            scrollable: false
+            margin_left: 10
+            width: 220
+            height: 210
+            bg_color: "0x1a1a1a"
+            radius: 8
+            border_width: 1
+            border_color: "0x333333"
+            layout:
+              type: flex
+              flex_flow: column
+              pad_row: 4
+              flex_align_main: center
+              flex_align_cross: center
+            widgets:
+              # Icon in Statusfarbe: ein Kreis pro Status, nur einer sichtbar
+              - container:
+                  id: icon_slot
+                  hidden: true
+                  scrollable: false
+                  width: 64
+                  height: 64
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  widgets:
+                    - container:
+                        id: circle_alarm
+                        hidden: true
+                        scrollable: false
+                        align: CENTER
+                        width: 64
+                        height: 64
+                        radius: 32
+                        bg_color: "0xE53935"
+                        bg_opa: COVER
+                        border_width: 0
+                        pad_all: 0
+                    - container:
+                        id: circle_warn
+                        hidden: true
+                        scrollable: false
+                        align: CENTER
+                        width: 64
+                        height: 64
+                        radius: 32
+                        bg_color: "0xFB8C00"
+                        bg_opa: COVER
+                        border_width: 0
+                        pad_all: 0
+                    - container:
+                        id: circle_ok
+                        hidden: true
+                        scrollable: false
+                        align: CENTER
+                        width: 64
+                        height: 64
+                        radius: 32
+                        bg_color: "0x43A047"
+                        bg_opa: COVER
+                        border_width: 0
+                        pad_all: 0
+                    - container:
+                        id: circle_info
+                        hidden: true
+                        scrollable: false
+                        align: CENTER
+                        width: 64
+                        height: 64
+                        radius: 32
+                        bg_color: "0x1E88E5"
+                        bg_opa: COVER
+                        border_width: 0
+                        pad_all: 0
+                    - container:
+                        id: circle_on
+                        hidden: true
+                        scrollable: false
+                        align: CENTER
+                        width: 64
+                        height: 64
+                        radius: 32
+                        bg_color: "0xFDD835"
+                        bg_opa: COVER
+                        border_width: 0
+                        pad_all: 0
+                    - container:
+                        id: circle_off
+                        hidden: true
+                        scrollable: false
+                        align: CENTER
+                        width: 64
+                        height: 64
+                        radius: 32
+                        bg_color: "0x616161"
+                        bg_opa: COVER
+                        border_width: 0
+                        pad_all: 0
+                    - image:
+                        id: answer_img
+                        src: img_information
+                        align: CENTER
+                        image_recolor: "0xFFFFFF"
+                        image_recolor_opa: COVER
+
+              - label:
+                  id: answer_title_label
+                  hidden: true
+                  text: !lambda 'return id(answer_title).c_str();'
+                  text_color: "0xAAAAAA"
+                  text_font: font_roboto_400_14
+                  width: 200
+                  text_align: center
+              - label:
+                  id: answer_value_label
+                  hidden: true
+                  text: !lambda 'return id(answer_value).c_str();'
+                  text_color: "0xFFFFFF"
+                  text_font: font_roboto_400_28
+                  width: 200
+                  text_align: center
+              - label:
+                  id: answer_detail_label
+                  hidden: true
+                  text: !lambda 'return id(answer_detail).c_str();'
+                  text_color: "0xCCCCCC"
+                  text_font: font_roboto_400_14
+                  width: 200
+                  text_align: center
+              - label:
+                  id: tile_count_label
+                  hidden: true
+                  text: !lambda 'return id(tile_counter_text).c_str();'
+                  text_color: "0x888888"
+                  text_font: font_roboto_400_14
+
+              - label:
+                  id: response_label
+                  text: !lambda |-
+                    if (!id(response_text).empty()) {
+                      return id(response_text).c_str();
+                    }
+                    if (id(assistant_active)) {
+                      return "Warte auf Befehl...";
+                    }
+                    return "Keine Meldungen";
+                  text_color: "0xFFFFFF"
+                  text_font: font_roboto_400_20
+                  width: 200
+                  text_align: center
+
+              # Ja/Nein-Tasten, nur bei einer Frage sichtbar
+              - container:
+                  id: question_row
+                  hidden: true
+                  scrollable: false
+                  width: 200
+                  height: 48
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  layout:
+                    type: flex
+                    flex_flow: row
+                    flex_align_main: space_evenly
+                    flex_align_cross: center
+                  widgets:
+                    - button:
+                        id: answer_yes
+                        width: 84
+                        height: 42
+                        radius: 8
+                        bg_color: "0x43A047"
+                        on_click:
+                          - script.execute:
+                              id: answer_question
+                              antwort: "yes"
+                        widgets:
+                          - label:
+                              align: CENTER
+                              text: "Ja"
+                              text_color: "0xFFFFFF"
+                              text_font: font_roboto_400_20
+                    - button:
+                        id: answer_no
+                        width: 84
+                        height: 42
+                        radius: 8
+                        bg_color: "0xE53935"
+                        on_click:
+                          - script.execute:
+                              id: answer_question
+                              antwort: "no"
+                        widgets:
+                          - label:
+                              align: CENTER
+                              text: "Nein"
+                              text_color: "0xFFFFFF"
+                              text_font: font_roboto_400_20

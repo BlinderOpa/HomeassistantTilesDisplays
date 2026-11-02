@@ -1,0 +1,429 @@
+# Example: your OWN configuration – only calls of the blueprints with your entity ids.
+# Copy to config/packages/ (e.g. my_wall_tiles.yaml) and replace the example entity ids.
+# Everything here can also be created in the UI (automations/scripts from blueprints);
+# template blueprints (the tiles) are YAML only for now.
+#
+# Afterwards: Developer tools → YAML → reload all, then give every sensor.tile_* the label "Display".
+
+# ════════════════════ required ════════════════════
+script:
+  display_answer:
+    alias: "Display: show answer"
+    use_blueprint:
+      path: wall_tiles/display_answer.yaml
+      input:
+        devices:
+          my-wall-display: number.my_wall_display_brightness
+          my-voice-s3: select.my_voice_s3_assistant
+          my-voice-c6: select.my_voice_c6_assistant
+        wall_node: my-wall-display
+
+  # shutters (used by the two shutter tiles and the voice group command)
+  shutters_evening_down:
+    alias: "Shutters evening down"
+    use_blueprint:
+      path: wall_tiles/shutters_group.yaml
+      input:
+        mode: close
+        covers: [cover.living_room, cover.kitchen, cover.dining]
+        partial_cover: cover.living_room     # only to 40 % (dog door)
+  shutters_morning_up:
+    alias: "Shutters morning up"
+    use_blueprint:
+      path: wall_tiles/shutters_group.yaml
+      input:
+        mode: open
+        covers: [cover.living_room, cover.kitchen, cover.dining]
+
+  laundry_unloaded:
+    alias: "Laundry unloaded"
+    use_blueprint:
+      path: wall_tiles/appliance_unloaded.yaml
+      input:
+        flag_entity: input_boolean.laundry_done
+        button_entity: button.washer_mark_unloaded
+
+  ventilation_boost:
+    alias: "Ventilation boost"
+    sequence:
+      - action: select.select_option
+        target: {entity_id: select.ventilation_mode}
+        data: {option: override}
+
+input_boolean:
+  laundry_done:
+    name: "Laundry done"
+    icon: mdi:washing-machine-alert
+
+automation:
+  - id: wall_tiles_tap
+    alias: "Wall tiles: handle taps"
+    use_blueprint:
+      path: wall_tiles/tile_tap_handler.yaml
+  - id: wall_tiles_push_wall
+    alias: "Wall tiles: push to wall display"
+    use_blueprint:
+      path: wall_tiles/tiles_push.yaml
+      input:
+        node_name: my-wall-display
+  - id: wall_tiles_push_c6
+    alias: "Wall tiles: push to voice satellite C6"
+    use_blueprint:
+      path: wall_tiles/tiles_push.yaml
+      input:
+        node_name: my-voice-c6
+        compact: true
+  - id: wall_display_brightness
+    alias: "Wall display: brightness"
+    use_blueprint:
+      path: wall_tiles/display_brightness.yaml
+      input:
+        brightness_entity: number.my_wall_display_brightness
+        node_name: my-wall-display
+
+  - id: laundry_done_detect
+    alias: "Laundry: detect done"
+    use_blueprint:
+      path: wall_tiles/appliance_done_detect.yaml
+      input:
+        running_entity: binary_sensor.washer_running
+        flag_entity: input_boolean.laundry_done
+
+  # ════════════════════ voice ════════════════════
+  - id: voice_washer
+    alias: "Voice: washer"
+    use_blueprint:
+      path: wall_tiles/voice_appliance.yaml
+      input:
+        running_entity: binary_sensor.washer_running
+        remaining_entity: sensor.washer_remaining_time
+        progress_entity: sensor.washer_progress
+        program_entity: sensor.washer_program
+  - id: voice_ebike
+    alias: "Voice: e-bike full?"
+    use_blueprint:
+      path: wall_tiles/voice_charging_plug.yaml
+      input:
+        switch_entity: switch.ebike_plug
+        power_entity: sensor.ebike_plug_power
+  - id: voice_3d_printer
+    alias: "Voice: 3D printer"
+    use_blueprint:
+      path: wall_tiles/voice_3d_printer.yaml
+      input:
+        print_state: sensor.3d_printer_current_print_state
+        printer_state: sensor.3d_printer_printer_state
+        progress: sensor.3d_printer_progress
+        time_left: sensor.3d_printer_print_time_left
+        eta: sensor.3d_printer_print_eta
+  - id: voice_waste
+    alias: "Voice: waste"
+    use_blueprint:
+      path: wall_tiles/voice_waste.yaml
+      input:
+        calendar_entity: calendar.waste_collection
+  - id: voice_train
+    alias: "Voice: train"
+    use_blueprint:
+      path: wall_tiles/voice_train.yaml
+  - id: voice_weather
+    alias: "Voice: weather and rain"
+    use_blueprint:
+      path: wall_tiles/voice_weather.yaml
+      input:
+        weather_entity: weather.home
+  - id: voice_energy
+    alias: "Voice: battery, PV, laundry"
+    use_blueprint:
+      path: wall_tiles/voice_energy.yaml
+      input:
+        soc_entity: sensor.home_battery_soc
+        pv_entity: sensor.pv_production
+        house_entity: sensor.house_consumption
+        export_entity: sensor.grid_export
+        import_entity: sensor.grid_import
+        rest_today_entity: sensor.energy_production_today_remaining
+        tomorrow_entity: sensor.energy_production_tomorrow
+  - id: voice_ack_waste
+    alias: "Voice: waste put out"
+    use_blueprint:
+      path: wall_tiles/voice_ack_tile.yaml
+      input:
+        tile_entity: sensor.tile_waste
+  - id: voice_ack_laundry
+    alias: "Voice: laundry unloaded"
+    use_blueprint:
+      path: wall_tiles/voice_ack_tile.yaml
+      input:
+        tile_entity: sensor.tile_laundry
+        sentences: ["Wäsche [ist] ausgeräumt", "Waschmaschine [ist] (leer | ausgeräumt)", "Ich habe die Wäsche ausgeräumt"]
+        title: "Wäsche"
+        icon: washing-machine
+        done_value: "ausgeräumt"
+        done_text: "Danke, die Wäsche ist als ausgeräumt markiert."
+        nothing_value: "nichts offen"
+        nothing_text: "Es ist gerade keine fertige Wäsche gemeldet."
+  - id: voice_ack_calls
+    alias: "Voice: clear missed calls"
+    use_blueprint:
+      path: wall_tiles/voice_ack_tile.yaml
+      input:
+        tile_entity: sensor.tile_missed_calls
+        sentences: ["Anrufe gelesen", "(Anrufliste | verpasste Anrufe) löschen"]
+        title: "Anrufe"
+        icon: phone-missed
+        done_value: "gelöscht"
+        done_text: "Erledigt, die verpassten Anrufe sind gelöscht."
+        nothing_value: "keine"
+        nothing_text: "Es gibt keine verpassten Anrufe."
+  - id: voice_switch_ebike
+    alias: "Voice: e-bike plug on/off"
+    use_blueprint:
+      path: wall_tiles/voice_switch_tile.yaml
+      input:
+        tile_entity: sensor.tile_ebike
+        name: "E-Bike"
+        icon: bicycle-electric
+  - id: voice_switch_workplace
+    alias: "Voice: workplace plug on/off"
+    use_blueprint:
+      path: wall_tiles/voice_switch_tile.yaml
+      input:
+        tile_entity: sensor.tile_workplace
+        sentences_on: ["Arbeitsplatz [Steckdose] (an | einschalten)"]
+        sentences_off: ["Arbeitsplatz [Steckdose] (aus | ausschalten)"]
+        name: "Arbeitsplatz"
+  - id: voice_shutters_group
+    alias: "Voice: lower shutters up/down"
+    use_blueprint:
+      path: wall_tiles/voice_shutters_group.yaml
+      input:
+        tile_close: sensor.tile_shutters_down
+        tile_open: sensor.tile_shutters_up
+
+# ════════════════════ tiles ════════════════════
+# "name" decides the entity id: "Tile Ebike" → sensor.tile_ebike → tile id "ebike".
+template:
+  # --- faults ---
+  - name: "Tile Water"
+    unique_id: tile_water
+    use_blueprint:
+      path: wall_tiles/tile_binary_alarm.yaml
+      input:
+        sensor_entity: binary_sensor.water_leak
+        title: "Wasser!"
+        value: "Lüftung"
+        detail: "Wassermelder hat ausgelöst"
+        icon: mdi:water-alert
+        prio: 0
+  - name: "Tile Heat Pump"
+    unique_id: tile_heat_pump
+    use_blueprint:
+      path: wall_tiles/tile_device_fault.yaml
+      input:
+        fault_entity: binary_sensor.heat_pump_disturbance
+        value_entity: sensor.heat_pump_error_reason
+        detail_entity: sensor.heat_pump_status_line
+        detail_prefix: "Status: "
+        title: "Wärmepumpe"
+        prio_fault: 1
+  - name: "Tile Ventilation"
+    unique_id: tile_ventilation
+    use_blueprint:
+      path: wall_tiles/tile_device_fault.yaml
+      input:
+        fault_entity: binary_sensor.ventilation_alarm_fault
+        warning_entity: binary_sensor.ventilation_alarm_warning
+        detail_entity: sensor.ventilation_active_alarms
+        title: "Lüftung"
+        fault_word: "Fehler"
+        prio_fault: 2
+        prio_warning: 12
+        icon: mdi:fan-alert
+  - name: "Tile 3D Printer Error"
+    unique_id: tile_3d_printer_error
+    use_blueprint:
+      path: wall_tiles/tile_3d_printer.yaml
+      input:
+        mode: error
+        print_state: sensor.3d_printer_current_print_state
+        printer_state: sensor.3d_printer_printer_state
+        message: sensor.3d_printer_printer_message
+  - name: "Tile Weather Warning"
+    unique_id: tile_weather_warning
+    use_blueprint:
+      path: wall_tiles/tile_weather_warning.yaml
+      input:
+        current_entity: sensor.dwd_current_warning_level
+        advance_entity: sensor.dwd_advance_warning_level
+  - name: "Tile Batteries"
+    unique_id: tile_batteries
+    use_blueprint:
+      path: wall_tiles/tile_batteries.yaml
+      input:
+        exclude: [sensor.home_battery_soc, sensor.my_phone_battery_level]
+
+  # --- room climate (finds the sensors by area) ---
+  - name: "Tile Room Humidity"
+    unique_id: tile_room_humidity
+    use_blueprint:
+      path: wall_tiles/tile_room_humidity.yaml
+      input:
+        area_limits: {Keller: 65}
+        action_entity: script.ventilation_boost
+        active_entity: select.ventilation_mode
+  - name: "Tile Room Cold"
+    unique_id: tile_room_cold
+    use_blueprint:
+      path: wall_tiles/tile_room_cold.yaml
+      input:
+        exclude_areas: [Keller, Garage]
+  - name: "Tile Air Quality"
+    unique_id: tile_air_quality
+    use_blueprint:
+      path: wall_tiles/tile_air_quality.yaml
+
+  # --- situational ---
+  - name: "Train Next"
+    unique_id: train_next
+    use_blueprint:
+      path: wall_tiles/train_next.yaml
+      input:
+        connection_entity: sensor.my_station_destination_connection_1
+  - name: "Tile Train"
+    unique_id: tile_train
+    use_blueprint:
+      path: wall_tiles/tile_train.yaml
+      input:
+        holiday_entity: binary_sensor.public_holiday
+  - name: "Tile Hot Water"
+    unique_id: tile_hot_water
+    use_blueprint:
+      path: wall_tiles/tile_hot_water.yaml
+      input:
+        temp_entity: sensor.hot_water_temperature
+        target_entity: number.hot_water_target_temperature
+        rise_entity: sensor.hot_water_rise          # Derivative helper (UI)
+        schedule_entity: text.hot_water_schedule_week
+  - name: "Tile Shutters Down"
+    unique_id: tile_shutters_down
+    use_blueprint:
+      path: wall_tiles/tile_shutters_check.yaml
+      input:
+        mode: close
+        covers: [cover.living_room, cover.kitchen, cover.dining]
+        action_entity: script.shutters_evening_down
+  - name: "Tile Shutters Up"
+    unique_id: tile_shutters_up
+    use_blueprint:
+      path: wall_tiles/tile_shutters_check.yaml
+      input:
+        mode: open
+        covers: [cover.living_room, cover.kitchen, cover.dining]
+        action_entity: script.shutters_morning_up
+  - name: "Tile Pool"
+    unique_id: tile_pool
+    use_blueprint:
+      path: wall_tiles/tile_pool.yaml
+      input:
+        ph_entity: sensor.pool_ph
+        orp_entity: sensor.pool_orp
+        temp_entity: sensor.pool_temperature
+  - name: "Tile Laundry"
+    unique_id: tile_laundry
+    use_blueprint:
+      path: wall_tiles/tile_appliance_done.yaml
+      input:
+        flag_entity: input_boolean.laundry_done
+        action_entity: script.laundry_unloaded
+  - name: "Tile Washer"
+    unique_id: tile_washer
+    use_blueprint:
+      path: wall_tiles/tile_appliance.yaml
+      input:
+        running_entity: binary_sensor.washer_running
+        remaining_entity: sensor.washer_remaining_time
+        progress_entity: sensor.washer_progress
+        program_entity: sensor.washer_program
+        title: "Wäsche läuft"
+        icon: mdi:washing-machine
+  - name: "Tile 3D Printer"
+    unique_id: tile_3d_printer
+    use_blueprint:
+      path: wall_tiles/tile_3d_printer.yaml
+      input:
+        print_state: sensor.3d_printer_current_print_state
+        printer_state: sensor.3d_printer_printer_state
+        time_left: sensor.3d_printer_print_time_left
+        eta: sensor.3d_printer_print_eta
+        progress: sensor.3d_printer_progress
+        current_layer: sensor.3d_printer_current_layer
+        total_layer: sensor.3d_printer_total_layer
+  - name: "Tile Power"
+    unique_id: tile_power
+    use_blueprint:
+      path: wall_tiles/tile_power.yaml
+      input:
+        consumption_entity: sensor.house_consumption
+        production_entity: sensor.pv_production
+        grid_import_entity: sensor.grid_import
+        devices:
+          Wärmepumpe: sensor.heat_pump_power
+          Lüftung: sensor.ventilation_power
+          Waschmaschine: sensor.washer_plug_power
+          E-Bike: sensor.ebike_plug_power
+          Batterie lädt: sensor.home_battery_charge_power
+  - name: "Tile PV"
+    unique_id: tile_pv
+    use_blueprint:
+      path: wall_tiles/tile_pv_surplus.yaml
+      input:
+        production_entity: sensor.pv_production
+        consumption_entity: sensor.house_consumption
+        battery_entity: sensor.home_battery_soc
+  - name: "Tile Maintenance"
+    unique_id: tile_maintenance
+    use_blueprint:
+      path: wall_tiles/tile_maintenance.yaml
+      input:
+        internet_entity: binary_sensor.router_connection
+        power_problem_entity: binary_sensor.rpi_power_status
+        filter_entity: sensor.ventilation_filter_clogging
+        toner_entities: [sensor.printer_toner_black, sensor.printer_toner_cyan, sensor.printer_toner_magenta, sensor.printer_toner_yellow]
+        care_entities: [binary_sensor.washer_maintenance_due]
+        offline_entities: [binary_sensor.homematic_connectivity_hmip_rf]
+        repairs_entity: sensor.active_issues
+        backup_entity: sensor.backup_last_successful_automatic_backup
+
+  # --- switches ---
+  - name: "Tile Ebike"
+    unique_id: tile_ebike
+    use_blueprint:
+      path: wall_tiles/tile_socket.yaml
+      input:
+        switch_entity: switch.ebike_plug
+        power_entity: sensor.ebike_plug_power
+        title: "E-Bike"
+        detail: "Antippen schaltet aus"
+        only_when_on: true
+        charging_watts: 5
+        prio: 40
+        icon: mdi:bicycle-electric
+  - name: "Tile Battery Charger"
+    unique_id: tile_battery_charger
+    use_blueprint:
+      path: wall_tiles/tile_battery_charger.yaml
+      input:
+        switch_entity: switch.charger_plug
+        avg_power_entity: sensor.charger_power_avg   # Statistics helper (UI)
+        drawer_entity: binary_sensor.charger_drawer
+  - name: "Tile Workplace"
+    unique_id: tile_workplace
+    use_blueprint:
+      path: wall_tiles/tile_socket.yaml
+      input:
+        switch_entity: switch.desk_plug
+        power_entity: sensor.desk_plug_power
+        title: "Arbeitsplatz"
+        detail: "Büro"
+        prio: 50

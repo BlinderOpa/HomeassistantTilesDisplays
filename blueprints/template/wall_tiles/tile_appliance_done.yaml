@@ -1,0 +1,49 @@
+blueprint:
+  name: "Wall tiles: appliance done (please unload)"
+  description: >
+    Shows "Wäsche fertig" (or your title) while a done-flag (input_boolean) is on, with the time
+    since when. Tapping runs your "unloaded" script. The flag is set/cleared by the automation
+    blueprint "appliance done – detect"; the script comes from the script blueprint
+    "appliance unloaded". Works for washer, dryer, dishwasher …
+  domain: template
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/template/wall_tiles/tile_appliance_done.yaml
+  input:
+    flag_entity:
+      name: Done flag (input_boolean helper)
+      selector: {entity: {domain: input_boolean}}
+    action_entity:
+      name: '"Unloaded" script (run on tap)'
+      selector: {entity: {domain: script}}
+    title:
+      name: Title
+      default: "Wäsche fertig"
+      selector: {text: {}}
+    prio:
+      name: Priority
+      default: 29
+      selector: {number: {min: 0, max: 99}}
+    icon:
+      name: Icon
+      default: "mdi:washing-machine-alert"
+      selector: {icon: {}}
+
+variables:
+  flag: !input flag_entity
+  act_e: !input action_entity
+  title_: !input title
+  prio_: !input prio
+  icon_: !input icon
+
+sensor:
+  icon: "{{ icon_ }}"
+  state: "{{ 'info' if is_state(flag, 'on') else 'hidden' }}"
+  attributes:
+    prio: "{{ prio_ | int }}"
+    title: "{{ title_ }}"
+    value: >
+      {% set s = states[flag] %}
+      {{ 'seit ' ~ as_local(s.last_changed).strftime('%H:%M') if s is not none and s.state == 'on' else '' }}
+    detail: "Antippen = ausgeräumt"
+    progress: -1
+    tap: "ack"
+    action: "{{ act_e }}"

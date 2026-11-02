@@ -1,0 +1,50 @@
+blueprint:
+  name: "Wall tiles: appliance done – detect"
+  description: >
+    Sets a done-flag (input_boolean) when an appliance has stopped running for a moment.
+    Clears it again when the appliance starts, or after a maximum time.
+    Pair with the tile blueprint "appliance done" and the script blueprint "appliance unloaded".
+  domain: automation
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/automation/wall_tiles/appliance_done_detect.yaml
+  input:
+    running_entity:
+      name: Running (state "on" while running)
+      selector: {entity: {}}
+    flag_entity:
+      name: Done flag (input_boolean helper)
+      selector: {entity: {domain: input_boolean}}
+    settle:
+      name: Done after not running for
+      default: {minutes: 1}
+      selector: {duration: {}}
+    max_time:
+      name: Clear the flag automatically after
+      default: {minutes: 30}
+      selector: {duration: {}}
+
+mode: restart
+
+triggers:
+  - trigger: state
+    entity_id: !input running_entity
+    from: "on"
+    to: "off"
+    for: !input settle
+    id: done
+  - trigger: state
+    entity_id: !input running_entity
+    to: "on"
+    id: start
+  - trigger: state
+    entity_id: !input flag_entity
+    to: "on"
+    for: !input max_time
+    id: too_long
+
+variables:
+  flag: !input flag_entity
+
+actions:
+  - action: "{{ 'input_boolean.turn_on' if trigger.id == 'done' else 'input_boolean.turn_off' }}"
+    target:
+      entity_id: "{{ flag }}"

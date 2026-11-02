@@ -1,0 +1,87 @@
+blueprint:
+  name: "Wall tiles voice: acknowledge a tile"
+  description: >
+    Confirm a tile by voice instead of tapping it ("Müll ist draußen", "Wäsche ist ausgeräumt",
+    "Anrufe gelesen"). Sends the same event as a tap (esphome.display_tap, device "voice"),
+    so the tile handler runs the tile's action. Optionally only while the tile is visible.
+    In the answer texts, {value} is replaced by the tile's current value (e.g. "Bio + Papier").
+    After changing sentences: reload automations AND restart Speech-to-Phrase.
+  domain: automation
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/automation/wall_tiles/voice_ack_tile.yaml
+  input:
+    sentences:
+      name: Sentences
+      default:
+        - "(Müll | Tonne | Tonnen) [ist | sind] (draußen | rausgestellt)"
+        - "Ich habe [den] (Müll | die Tonne | die Tonnen) rausgestellt"
+      selector: {text: {multiple: true}}
+    tile_entity:
+      name: Tile (sensor.tile_…)
+      selector: {entity: {domain: sensor}}
+    only_when_visible:
+      name: Only when the tile is visible
+      default: true
+      selector: {boolean: {}}
+    title:
+      name: Display title
+      default: "Müll"
+      selector: {text: {}}
+    icon:
+      name: Icon when nothing to do (MDI name without mdi:)
+      default: "trash-can"
+      selector: {text: {}}
+    done_value:
+      name: Display value when done
+      default: "erledigt"
+      selector: {text: {}}
+    done_text:
+      name: Spoken answer when done
+      default: "Erledigt, {value} als rausgestellt vermerkt."
+      selector: {text: {}}
+    nothing_value:
+      name: Display value when there is nothing to do
+      default: "nichts zu tun"
+      selector: {text: {}}
+    nothing_text:
+      name: Spoken answer when there is nothing to do
+      default: "Gerade steht keine Abfuhr an."
+      selector: {text: {}}
+
+mode: parallel
+
+triggers:
+  - trigger: conversation
+    command: !input sentences
+
+variables:
+  tile: !input tile_entity
+  only_vis: !input only_when_visible
+  title_: !input title
+  icon_: !input icon
+  done_v: !input done_value
+  done_t: !input done_text
+  none_v: !input nothing_value
+  none_t: !input nothing_text
+  visible: "{{ states(tile) not in ['hidden', 'unknown', 'unavailable'] }}"
+  val: "{{ (state_attr(tile, 'value') or '') | string | replace(' + ', ' und ') | trim }}"
+  go: "{{ visible or not only_vis }}"
+
+actions:
+  - if: "{{ go }}"
+    then:
+      - event: esphome.display_tap
+        event_data:
+          device: voice
+          id: "{{ tile.split('.')[1][5:] }}"
+          tap: "{{ state_attr(tile, 'tap') or 'ack' }}"
+  - action: script.display_answer
+    continue_on_error: true
+    data:
+      target: "{{ trigger.device_id }}"
+      title: "{{ title_ }}"
+      value: "{{ done_v if go else none_v }}"
+      detail: "{{ val if go else '' }}"
+      status: "{{ 'ok' if go else 'info' }}"
+      icon: "{{ 'check' if go else icon_ }}"
+      duration: 4
+  - set_conversation_response: "{{ (done_t if go else none_t) | replace('{value}', val) | replace('  ', ' ') }}"

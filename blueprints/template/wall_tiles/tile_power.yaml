@@ -1,0 +1,101 @@
+blueprint:
+  name: "Wall tiles: power consumption"
+  description: >
+    Visible when the house uses a lot of power. Blue = covered by PV/battery,
+    orange = importing from the grid. The detail line shows PV production and the
+    biggest consumer; "nicht erfasst" = house consumption minus all measured devices.
+    The attribute "list" holds all consumers sorted by power (usable elsewhere).
+  domain: template
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/template/wall_tiles/tile_power.yaml
+  input:
+    consumption_entity:
+      name: House consumption (W)
+      selector: {entity: {domain: sensor, device_class: power}}
+    production_entity:
+      name: PV production (W, optional)
+      default: ""
+      selector: {entity: {domain: sensor, device_class: power}}
+    grid_import_entity:
+      name: Grid import (W, optional)
+      default: ""
+      selector: {entity: {domain: sensor, device_class: power}}
+    devices:
+      name: Measured consumers
+      description: >
+        Mapping "label: power sensor", e.g.
+          Wärmepumpe: sensor.heat_pump_power
+          Waschmaschine: sensor.washer_plug_power
+        kW sensors are converted. A label starting with "Batterie" is shown but not
+        counted as consumption (battery charging).
+      default: {}
+      selector: {object: {}}
+    show_from:
+      name: Show from (W)
+      default: 1000
+      selector: {number: {min: 100, max: 20000, step: 100, unit_of_measurement: W}}
+    hide_below:
+      name: Hide below (W)
+      default: 800
+      selector: {number: {min: 0, max: 20000, step: 100, unit_of_measurement: W}}
+    import_warn:
+      name: Orange from grid import (W)
+      default: 200
+      selector: {number: {min: 0, max: 5000, step: 50, unit_of_measurement: W}}
+    prio:
+      name: Priority
+      default: 35
+      selector: {number: {min: 0, max: 99}}
+
+variables:
+  cons_e: !input consumption_entity
+  prod_e: !input production_entity
+  grid_e: !input grid_import_entity
+  devices_: !input devices
+  on_w: !input show_from
+  off_w: !input hide_below
+  warn_w: !input import_warn
+  prio_: !input prio
+
+sensor:
+  icon: mdi:flash
+  state: >
+    {% set w = states(cons_e) | float(0) %}
+    {% set was_on = this.state is defined and this.state not in ['hidden', 'unknown', 'unavailable'] %}
+    {% if w >= on_w | float or (was_on and w >= off_w | float) %}
+      {{ 'warn' if grid_e and states(grid_e) | float(0) > warn_w | float else 'info' }}
+    {% else %}hidden{% endif %}
+  attributes:
+    prio: "{{ prio_ | int }}"
+    title: "Strom"
+    value: "{{ ('%.1f' | format(states(cons_e) | float(0) / 1000)) | replace('.', ',') }} kW"
+    list: >
+      {% set ns = namespace(l=[], total=0) %}
+      {% for name, e in (devices_ or {}).items() %}
+        {% set v = states(e) | float(0) %}
+        {% if state_attr(e, 'unit_of_measurement') == 'kW' %}{% set v = v * 1000 %}{% endif %}
+        {% if v >= 1 %}
+          {% set ns.l = ns.l + [{'name': name, 'w': v | round(0) | int}] %}
+          {% if not name.startswith('Batterie') %}{% set ns.total = ns.total + v %}{% endif %}
+        {% endif %}
+      {% endfor %}
+      {% set rest = states(cons_e) | float(0) - ns.total %}
+      {% if devices_ and rest >= 50 %}{% set ns.l = ns.l + [{'name': 'nicht erfasst', 'w': rest | round(0) | int}] %}{% endif %}
+      {{ ns.l | sort(attribute='w', reverse=true) }}
+    detail: >
+      {% set ns = namespace(top='', w=0, total=0) %}
+      {% for name, e in (devices_ or {}).items() %}
+        {% set v = states(e) | float(0) %}
+        {% if state_attr(e, 'unit_of_measurement') == 'kW' %}{% set v = v * 1000 %}{% endif %}
+        {% if not name.startswith('Batterie') %}{% set ns.total = ns.total + v %}{% endif %}
+        {% if v > ns.w %}{% set ns.w = v %}{% set ns.top = name %}{% endif %}
+      {% endfor %}
+      {% set rest = states(cons_e) | float(0) - ns.total %}
+      {% if devices_ and rest > ns.w and rest >= 50 %}{% set ns.w = rest %}{% set ns.top = 'nicht erfasst' %}{% endif %}
+      {% set parts = [] %}
+      {% if prod_e %}{% set parts = parts + ['PV ' ~ ('%.1f' | format(states(prod_e) | float(0) / 1000)) | replace('.', ',') ~ ' kW'] %}{% endif %}
+      {% if ns.top %}
+        {% set parts = parts + [ns.top ~ ' ' ~ ((('%.1f' | format(ns.w / 1000)) | replace('.', ',') ~ ' kW') if ns.w >= 1000 else ((ns.w | round(0) | int) ~ ' W'))] %}
+      {% endif %}
+      {{ parts | join(' · ') }}
+    progress: -1
+    tap: "none"

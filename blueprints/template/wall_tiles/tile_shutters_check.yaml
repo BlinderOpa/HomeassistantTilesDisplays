@@ -1,0 +1,82 @@
+blueprint:
+  name: "Wall tiles: shutters still open / still closed"
+  description: >
+    Mode "close": after dark (sun below an elevation), outside the morning window,
+    warns while a shutter of the list is still up → tap runs your "close" script.
+    Mode "open": in the morning window, shows while a shutter is still down → tap runs your "open" script.
+    "Down" = position ≤ 40 % (covers without position: state "closed").
+    Create one entity per mode. Matching scripts: script blueprint "shutters open / close".
+  domain: template
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/template/wall_tiles/tile_shutters_check.yaml
+  input:
+    mode:
+      name: Mode
+      default: close
+      selector: {select: {options: [close, open]}}
+    covers:
+      name: Shutters
+      selector: {entity: {domain: cover, multiple: true}}
+    action_entity:
+      name: Script to run on tap
+      selector: {entity: {domain: script}}
+    morning_from:
+      name: Morning window from (hour)
+      default: 6
+      selector: {number: {min: 0, max: 23}}
+    morning_to:
+      name: Morning window until (hour, exclusive)
+      default: 12
+      selector: {number: {min: 1, max: 24}}
+    dark_elevation:
+      name: '"Dark" = sun elevation below (°)'
+      default: -4
+      selector: {number: {min: -18, max: 10}}
+    down_position:
+      name: Counts as down up to position (%)
+      default: 40
+      selector: {number: {min: 0, max: 100, unit_of_measurement: "%"}}
+
+variables:
+  mode_: !input mode
+  covers_: !input covers
+  act_e: !input action_entity
+  m_from: !input morning_from
+  m_to: !input morning_to
+  dark: !input dark_elevation
+  down_p: !input down_position
+
+sensor:
+  icon: "{{ 'mdi:window-shutter' if mode_ == 'close' else 'mdi:window-shutter-open' }}"
+  state: >
+    {% set ns = namespace(n=0) %}
+    {% for e in covers_ %}
+      {% set p = state_attr(e, 'current_position') %}
+      {% set is_down = (p is number and p <= down_p | int) or (p is not number and is_state(e, 'closed')) %}
+      {% if is_down == (mode_ == 'open') %}{% set ns.n = ns.n + 1 %}{% endif %}
+    {% endfor %}
+    {% set morning = m_from | int <= now().hour < m_to | int %}
+    {% if mode_ == 'open' %}{{ 'info' if morning and ns.n > 0 else 'hidden' }}
+    {% else %}{{ 'warn' if not morning and state_attr('sun.sun', 'elevation') | float(0) < dark | float and ns.n > 0 else 'hidden' }}{% endif %}
+  attributes:
+    prio: "{{ 25 if mode_ == 'close' else 26 }}"
+    title: "{{ 'Rollos runter?' if mode_ == 'close' else 'Rollos hoch?' }}"
+    value: >
+      {% set ns = namespace(n=0) %}
+      {% for e in covers_ %}
+        {% set p = state_attr(e, 'current_position') %}
+        {% set is_down = (p is number and p <= down_p | int) or (p is not number and is_state(e, 'closed')) %}
+        {% if is_down == (mode_ == 'open') %}{% set ns.n = ns.n + 1 %}{% endif %}
+      {% endfor %}
+      {{ ns.n }} {{ 'oben' if mode_ == 'close' else 'unten' }}
+    detail: >
+      {% set ns = namespace(l=[]) %}
+      {% for e in covers_ %}
+        {% set p = state_attr(e, 'current_position') %}
+        {% set is_down = (p is number and p <= down_p | int) or (p is not number and is_state(e, 'closed')) %}
+        {% if is_down == (mode_ == 'open') %}{% set ns.l = ns.l + [area_name(e)] %}{% endif %}
+      {% endfor %}
+      {{ ns.l | reject('none') | unique | join(', ') }}
+    progress: -1
+    tap: "ack"
+    action: "{{ act_e }}"
+    covers: "{{ covers_ }}"

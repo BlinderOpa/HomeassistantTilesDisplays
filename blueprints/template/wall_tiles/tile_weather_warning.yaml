@@ -1,0 +1,172 @@
+blueprint:
+  name: "Wall tiles: DWD weather warning"
+  description: >
+    Tile for the DWD (Deutscher Wetterdienst) integration. Takes the most important warning
+    of the current and the advance warning level. Shown from level 2 (orange),
+    level 3/4 = red, advance warning = orange with title "Vorwarnung".
+    The icon follows the warning type (thunderstorm, hail, wind, rain, snow, ice, heat, fog).
+  domain: template
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/template/wall_tiles/tile_weather_warning.yaml
+  input:
+    current_entity:
+      name: DWD current warning level sensor
+      selector: {entity: {domain: sensor}}
+    advance_entity:
+      name: DWD advance warning level sensor (optional)
+      default: ""
+      selector: {entity: {domain: sensor}}
+    min_level:
+      name: Show from level
+      default: 2
+      selector: {number: {min: 1, max: 4}}
+
+variables:
+  cur_e: !input current_entity
+  adv_e: !input advance_entity
+  min_l: !input min_level
+
+sensor:
+  icon: >
+    {% set ns = namespace(lvl=0, n='') %}
+    {% for e in [cur_e, adv_e] | select %}
+      {% for i in range(1, (state_attr(e, 'warning_count') | int(0)) + 1) %}
+        {% set l = state_attr(e, 'warning_' ~ i ~ '_level') | int(0) %}
+        {% if l > ns.lvl %}{% set ns.lvl = l %}{% set ns.n = (state_attr(e, 'warning_' ~ i ~ '_name') or '') | string | lower %}{% endif %}
+      {% endfor %}
+    {% endfor %}
+    {% set n = ns.n %}
+    {% if 'gewitter' in n %}mdi:weather-lightning
+    {% elif 'hagel' in n %}mdi:weather-hail
+    {% elif 'sturm' in n or 'orkan' in n or 'wind' in n or 'böen' in n %}mdi:weather-windy
+    {% elif 'regen' in n %}mdi:weather-pouring
+    {% elif 'schnee' in n %}mdi:weather-snowy-heavy
+    {% elif 'glätte' in n or 'glatteis' in n or 'frost' in n %}mdi:snowflake-alert
+    {% elif 'hitze' in n %}mdi:thermometer-high
+    {% elif 'nebel' in n %}mdi:weather-fog
+    {% else %}mdi:alert{% endif %}
+  state: >
+    {% set ns = namespace(lvl=0, adv=false) %}
+    {% for e in [cur_e, adv_e] | select %}
+      {% for i in range(1, (state_attr(e, 'warning_count') | int(0)) + 1) %}
+        {% set l = state_attr(e, 'warning_' ~ i ~ '_level') | int(0) %}
+        {% if l > ns.lvl %}{% set ns.lvl = l %}{% set ns.adv = (e == adv_e) %}{% endif %}
+      {% endfor %}
+    {% endfor %}
+    {% if ns.lvl >= 3 and not ns.adv %}alarm
+    {% elif ns.lvl >= min_l | int %}warn
+    {% else %}hidden{% endif %}
+  attributes:
+    warning: >
+      {% set ns = namespace(best={}, lvl=0, count=0) %}
+      {% for e in [cur_e, adv_e] | select %}
+        {% for i in range(1, (state_attr(e, 'warning_count') | int(0)) + 1) %}
+          {% set p = 'warning_' ~ i ~ '_' %}
+          {% set l = state_attr(e, p ~ 'level') | int(0) %}
+          {% if l >= min_l | int %}{% set ns.count = ns.count + 1 %}{% endif %}
+          {% if l > ns.lvl %}
+            {% set ns.lvl = l %}
+            {% set s = state_attr(e, p ~ 'start') %}
+            {% set z = state_attr(e, p ~ 'end') %}
+            {% set ns.best = {'level': l, 'name': (state_attr(e, p ~ 'name') or 'Unwetter') | string,
+                              'start': as_local(as_datetime(s | string)).isoformat() if s else '',
+                              'end': as_local(as_datetime(z | string)).isoformat() if z else '',
+                              'advance': e == adv_e} %}
+          {% endif %}
+        {% endfor %}
+      {% endfor %}
+      {{ dict(ns.best, count=ns.count) if ns.best else {} }}
+    prio: >
+      {% set ns = namespace(best={}, lvl=0, count=0) %}
+      {% for e in [cur_e, adv_e] | select %}
+        {% for i in range(1, (state_attr(e, 'warning_count') | int(0)) + 1) %}
+          {% set p = 'warning_' ~ i ~ '_' %}
+          {% set l = state_attr(e, p ~ 'level') | int(0) %}
+          {% if l >= min_l | int %}{% set ns.count = ns.count + 1 %}{% endif %}
+          {% if l > ns.lvl %}
+            {% set ns.lvl = l %}
+            {% set s = state_attr(e, p ~ 'start') %}
+            {% set z = state_attr(e, p ~ 'end') %}
+            {% set ns.best = {'level': l, 'name': (state_attr(e, p ~ 'name') or 'Unwetter') | string,
+                              'start': as_local(as_datetime(s | string)).isoformat() if s else '',
+                              'end': as_local(as_datetime(z | string)).isoformat() if z else '',
+                              'advance': e == adv_e} %}
+          {% endif %}
+        {% endfor %}
+      {% endfor %}
+      {% set w = dict(ns.best, count=ns.count) if ns.best else {} %}
+      {{ 4 if (w.get('level', 0) | int(0)) >= 3 and not w.get('advance') else 13 }}
+    title: >
+      {% set ns = namespace(best={}, lvl=0, count=0) %}
+      {% for e in [cur_e, adv_e] | select %}
+        {% for i in range(1, (state_attr(e, 'warning_count') | int(0)) + 1) %}
+          {% set p = 'warning_' ~ i ~ '_' %}
+          {% set l = state_attr(e, p ~ 'level') | int(0) %}
+          {% if l >= min_l | int %}{% set ns.count = ns.count + 1 %}{% endif %}
+          {% if l > ns.lvl %}
+            {% set ns.lvl = l %}
+            {% set s = state_attr(e, p ~ 'start') %}
+            {% set z = state_attr(e, p ~ 'end') %}
+            {% set ns.best = {'level': l, 'name': (state_attr(e, p ~ 'name') or 'Unwetter') | string,
+                              'start': as_local(as_datetime(s | string)).isoformat() if s else '',
+                              'end': as_local(as_datetime(z | string)).isoformat() if z else '',
+                              'advance': e == adv_e} %}
+          {% endif %}
+        {% endfor %}
+      {% endfor %}
+      {% set w = dict(ns.best, count=ns.count) if ns.best else {} %}
+      {{ 'Vorwarnung' if w.get('advance') else ('Unwetter!' if (w.get('level', 0) | int(0)) >= 3 else 'Wetterwarnung') }}
+    value: >
+      {% set ns = namespace(best={}, lvl=0, count=0) %}
+      {% for e in [cur_e, adv_e] | select %}
+        {% for i in range(1, (state_attr(e, 'warning_count') | int(0)) + 1) %}
+          {% set p = 'warning_' ~ i ~ '_' %}
+          {% set l = state_attr(e, p ~ 'level') | int(0) %}
+          {% if l >= min_l | int %}{% set ns.count = ns.count + 1 %}{% endif %}
+          {% if l > ns.lvl %}
+            {% set ns.lvl = l %}
+            {% set s = state_attr(e, p ~ 'start') %}
+            {% set z = state_attr(e, p ~ 'end') %}
+            {% set ns.best = {'level': l, 'name': (state_attr(e, p ~ 'name') or 'Unwetter') | string,
+                              'start': as_local(as_datetime(s | string)).isoformat() if s else '',
+                              'end': as_local(as_datetime(z | string)).isoformat() if z else '',
+                              'advance': e == adv_e} %}
+          {% endif %}
+        {% endfor %}
+      {% endfor %}
+      {% set w = dict(ns.best, count=ns.count) if ns.best else {} %}
+      {{ w.get('name', '') | string | title }}
+    detail: >
+      {% set ns = namespace(best={}, lvl=0, count=0) %}
+      {% for e in [cur_e, adv_e] | select %}
+        {% for i in range(1, (state_attr(e, 'warning_count') | int(0)) + 1) %}
+          {% set p = 'warning_' ~ i ~ '_' %}
+          {% set l = state_attr(e, p ~ 'level') | int(0) %}
+          {% if l >= min_l | int %}{% set ns.count = ns.count + 1 %}{% endif %}
+          {% if l > ns.lvl %}
+            {% set ns.lvl = l %}
+            {% set s = state_attr(e, p ~ 'start') %}
+            {% set z = state_attr(e, p ~ 'end') %}
+            {% set ns.best = {'level': l, 'name': (state_attr(e, p ~ 'name') or 'Unwetter') | string,
+                              'start': as_local(as_datetime(s | string)).isoformat() if s else '',
+                              'end': as_local(as_datetime(z | string)).isoformat() if z else '',
+                              'advance': e == adv_e} %}
+          {% endif %}
+        {% endfor %}
+      {% endfor %}
+      {% set w = dict(ns.best, count=ns.count) if ns.best else {} %}
+      {% set s = as_datetime(w.get('start')) if w.get('start') else none %}
+      {% set z = as_datetime(w.get('end')) if w.get('end') else none %}
+      {% set days = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'] %}
+      {% macro at(t) -%}
+        {%- if t.date() == now().date() -%}{{ t.strftime('%H:%M') }}
+        {%- elif t.date() == (now() + timedelta(days=1)).date() -%}morgen {{ t.strftime('%H:%M') }}
+        {%- else -%}{{ days[t.weekday()] }} {{ t.strftime('%H:%M') }}{%- endif -%}
+      {%- endmacro %}
+      {% set parts = [] %}
+      {% if s and s > now() %}{% set parts = parts + ['ab ' ~ at(s)] %}{% endif %}
+      {% if z %}{% set parts = parts + ['bis ' ~ at(z)] %}{% endif %}
+      {% set n = w.get('count', 0) | int(0) %}
+      {% if n > 1 %}{% set parts = parts + ['+' ~ (n - 1) ~ ' weitere'] %}{% endif %}
+      {{ parts | join(' · ') }}
+    progress: -1
+    tap: "none"

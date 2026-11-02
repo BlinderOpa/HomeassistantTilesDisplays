@@ -1,0 +1,67 @@
+blueprint:
+  name: "Wall tiles: shutters open / close (group)"
+  description: >
+    Opens or closes only those shutters of a list that are not already there.
+    "Down" = position ≤ 40 %. When closing, one optional shutter only goes to a partial
+    position (e.g. terrace door so the dog can get out).
+    Used by the tile "shutters still open / still closed" and the voice confirmations.
+  domain: script
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/script/wall_tiles/shutters_group.yaml
+  input:
+    mode:
+      name: Mode
+      default: close
+      selector: {select: {options: [close, open]}}
+    covers:
+      name: Shutters
+      selector: {entity: {domain: cover, multiple: true}}
+    partial_cover:
+      name: Shutter that only closes partially (optional)
+      default: ""
+      selector: {entity: {domain: cover}}
+    partial_position:
+      name: Its position when closing (%)
+      default: 40
+      selector: {number: {min: 0, max: 100, unit_of_measurement: "%"}}
+    down_position:
+      name: Counts as down up to position (%)
+      default: 40
+      selector: {number: {min: 0, max: 100, unit_of_measurement: "%"}}
+
+mode: queued
+
+variables:
+  mode_: !input mode
+  covers_: !input covers
+  half: !input partial_cover
+  half_pos: !input partial_position
+  down_p: !input down_position
+  todo: >
+    {% set ns = namespace(l=[]) %}
+    {% for e in covers_ %}
+      {% set p = state_attr(e, 'current_position') %}
+      {% set is_down = (p is number and p <= down_p | int) or (p is not number and is_state(e, 'closed')) %}
+      {% if is_down == (mode_ == 'open') %}{% set ns.l = ns.l + [e] %}{% endif %}
+    {% endfor %}
+    {{ ns.l }}
+  full: "{{ todo | reject('eq', half) | list if mode_ == 'close' else todo }}"
+
+sequence:
+  - if: "{{ mode_ == 'close' and half != '' and half in todo }}"
+    then:
+      - action: cover.set_cover_position
+        target:
+          entity_id: "{{ half }}"
+        data:
+          position: "{{ half_pos | int }}"
+  - if: "{{ full | count > 0 }}"
+    then:
+      - action: "{{ 'cover.close_cover' if mode_ == 'close' else 'cover.open_cover' }}"
+        target:
+          entity_id: "{{ full }}"
+  - variables:
+      result:
+        moved: "{{ todo | count }}"
+        partial: "{{ mode_ == 'close' and half != '' and half in todo }}"
+  - stop: done
+    response_variable: result

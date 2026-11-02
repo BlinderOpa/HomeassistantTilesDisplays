@@ -1,0 +1,2611 @@
+# Part of ha-wall-tiles – https://github.com/BlinderOpa/HomeassistantTilesDisplays (MIT)
+# Secrets: copy esphome/secrets.example.yaml to secrets.yaml and fill it in.
+# Comments in this file are German (original project language).
+# ============================================================================
+# Wanddisplay 7" (wall-display) - Waveshare ESP32-S3-Touch-LCD-7, 800x480
+# Schnittstelle Home Assistant <-> Displays v1.4
+#   Grundansicht "Wetterstation" (4.5), immer sichtbar:
+#     oben   Außen | Vorhersage heute | Innen
+#     Mitte  Uhr + Datum (bei Alarm: rotes Hinweisfeld darüber)
+#     unten  Sonnenauf-/untergang, oder bis zu 4 kleine Kacheln (+n)
+#   Aktionen: show_answer, show_question, cancel_question, set_tiles
+#   Events:   esphome.display_question_answer, esphome.display_tap, esphome.display_ready
+# Daten: nur sensor.ws_* aus dem HA-Package weather_station.yaml
+# ============================================================================
+
+substitutions:
+  # Override these in your own device file (see esphome/examples/), so the
+  # device keeps its existing name and entity ids in Home Assistant.
+  node_name: wall-display
+  friendly_name: ${friendly_name}
+  # Every device should have its own key. Default: secret "api_encryption_key".
+  api_key: !secret api_encryption_key
+
+esphome:
+  name: ${node_name}
+  friendly_name: "Wall Display"
+  min_version: 2025.5.0
+  project:
+    name: "Waveshare.ESP32-S3-touch-lcd-7"
+    version: "3.0"
+  on_boot:
+    priority: -100   # nach allen Komponenten inkl. LVGL
+    then:
+      - lambda: 'id(boot_done) = true;'
+      # Gespeicherte Helligkeit und Backlight-Zustand nach Neustart anwenden
+      - script.execute:
+          id: apply_dimming
+          level: !lambda 'return id(display_helligkeit).state;'
+      - if:
+          condition:
+            switch.is_on: display_backlight
+          then:
+            - lambda: 'id(ch422g_hub)->digital_write(2, true);'
+          else:
+            - lambda: 'id(ch422g_hub)->digital_write(2, false);'
+            - lvgl.pause:
+
+esp32:
+  variant: esp32s3
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+    advanced:
+      execute_from_psram: true
+
+psram:
+  mode: octal
+  speed: 80Mhz
+
+logger:
+
+json:
+
+api:
+  encryption:
+    key: ${api_key}
+
+  # 4.4 Synchronisation nach Neustart / Wiederverbindung
+  on_client_connected:
+    - delay: 2s
+    - homeassistant.event:
+        event: esphome.display_ready
+        data:
+          device: !lambda 'return App.get_name();'
+
+  actions:
+    # ------------------------------------------------------------------
+    # 2. show_answer -> Popup über allem
+    # ------------------------------------------------------------------
+    - action: show_answer
+      variables:
+        title: string
+        value: string
+        detail: string
+        status: string
+        icon: string
+        duration: int
+      then:
+        - lambda: |-
+            const std::string s_title(title), s_value(value), s_detail(detail);
+            const std::string s_status(status), s_icon(icon);
+            uint32_t c = id(status_color)(s_status);
+            lv_obj_set_style_border_color(id(answer_box), lv_color_hex(c), LV_PART_MAIN);
+            lv_obj_set_style_text_color(id(answer_icon), lv_color_hex(c), LV_PART_MAIN);
+            lv_label_set_text(id(answer_icon), id(icon_glyph)(s_icon).c_str());
+            lv_label_set_text(id(answer_title), s_title.c_str());
+            lv_label_set_text(id(answer_value), s_value.c_str());
+            lv_label_set_text(id(answer_detail), s_detail.c_str());
+        - lvgl.widget.show: answer_popup
+        - script.execute:
+            id: answer_timer
+            seconds: !lambda 'return duration > 0 ? duration : 8;'
+
+    # ------------------------------------------------------------------
+    # 3. show_question / cancel_question -> Ja/Nein-Dialog
+    # ------------------------------------------------------------------
+    - action: show_question
+      variables:
+        request_id: string
+        question: string
+        icon: string
+        timeout: int
+      then:
+        # Läuft noch eine andere Frage, wird sie mit "cancelled" beendet
+        - if:
+            condition:
+              lambda: 'return id(q_active);'
+            then:
+              - script.execute:
+                  id: send_question_answer
+                  answer: "cancelled"
+        - lambda: |-
+            const std::string s_icon(icon), s_question(question);
+            id(q_request_id) = std::string(request_id);
+            id(q_active) = true;
+            lv_label_set_text(id(question_icon), id(icon_glyph)(s_icon.empty() ? std::string("help") : s_icon).c_str());
+            lv_label_set_text(id(question_text), s_question.c_str());
+        - lvgl.widget.show: question_popup
+        - script.execute:
+            id: question_timer
+            seconds: !lambda 'return timeout > 0 ? timeout : 30;'
+
+    - action: cancel_question
+      variables:
+        request_id: string
+      then:
+        - if:
+            condition:
+              lambda: 'return id(q_active) && std::string(request_id) == id(q_request_id);'
+            then:
+              - script.execute:
+                  id: send_question_answer
+                  answer: "cancelled"
+
+    # ------------------------------------------------------------------
+    # 4.2 / 4.5 set_tiles
+    #   Grundansicht unten: erste 4 Kacheln klein, "+n" bei mehr
+    #   volle Kachelansicht: 12 Slots (4x3)
+    #   Alarm-Hinweisfeld über der Uhr, solange eine Kachel "alarm" ist
+    # ------------------------------------------------------------------
+    - action: set_tiles
+      variables:
+        tiles: string
+      then:
+        - lambda: |-
+            struct Tile {
+              std::string id, status, icon, title, value, detail, tap, mini_icon;
+              int progress;
+            };
+            std::vector<Tile> list;
+
+            const std::string s_tiles(tiles);
+            #if ARDUINOJSON_VERSION_MAJOR >= 7
+            JsonDocument doc;
+            #else
+            DynamicJsonDocument doc(8192);
+            #endif
+            DeserializationError err = deserializeJson(doc, s_tiles);
+            if (err) {
+              ESP_LOGW("tiles", "set_tiles: JSON-Fehler: %s", err.c_str());
+              return;
+            }
+            for (JsonObject t : doc.as<JsonArray>()) {
+              Tile k;
+              k.status   = t["status"] | "info";
+              if (k.status == "hidden") continue;
+              k.id       = t["id"]     | "";
+              k.icon     = t["icon"]   | "information";
+              k.title    = t["title"]  | "";
+              k.value    = t["value"]  | "";
+              k.detail   = t["detail"] | "";
+              k.tap      = t["tap"]    | "none";
+              k.progress = t["progress"] | -1;
+              k.mini_icon = t["mini_icon"] | "auto";   // auto | show | hide (v1.6)
+              list.push_back(k);
+              if (list.size() >= 12) break;
+            }
+            const size_t n = list.size();
+
+            auto fill = [&](const Tile &k, lv_obj_t *box, lv_obj_t *ico, lv_obj_t *tit,
+                            lv_obj_t *val, lv_obj_t *det, lv_obj_t *bar) {
+              uint32_t c = id(status_color)(k.status);
+              lv_obj_set_style_border_color(box, lv_color_hex(c), LV_PART_MAIN);
+              lv_obj_set_style_bg_color(box, lv_color_hex(k.status == "alarm" ? 0x3A1212 : 0x12161B), LV_PART_MAIN);
+              lv_obj_set_style_text_color(ico, lv_color_hex(c), LV_PART_MAIN);
+              lv_label_set_text(ico, id(icon_glyph)(k.icon).c_str());
+              lv_label_set_text(tit, k.title.c_str());
+              lv_label_set_text(val, k.value.c_str());
+              lv_label_set_text(det, k.detail.c_str());
+              if (k.progress >= 0) {
+                lv_bar_set_value(bar, k.progress > 100 ? 100 : k.progress, LV_ANIM_OFF);
+                lv_obj_set_style_bg_color(bar, lv_color_hex(c), LV_PART_INDICATOR);
+                lv_obj_clear_flag(bar, LV_OBJ_FLAG_HIDDEN);
+              } else {
+                lv_obj_add_flag(bar, LV_OBJ_FLAG_HIDDEN);
+              }
+              lv_obj_clear_flag(box, LV_OBJ_FLAG_HIDDEN);
+            };
+
+            // Icon zeigen? "show"/"hide" entscheidet die Kachel (mini_icon), "auto": nur wenn der
+            // Titel neben dem Icon ganz passt, sonst Titel über die volle Breite
+            auto title_layout = [&](const Tile &k, lv_obj_t *ico, lv_obj_t *tit, int32_t full_w) {
+              const int32_t beside_w = full_w - 42;
+              bool icon_an;
+              if (k.mini_icon == "show") icon_an = true;
+              else if (k.mini_icon == "hide") icon_an = false;
+              else {
+                // Textbreite direkt über die Schrift messen (geht auch, wenn die Kachel ausgeblendet ist)
+                lv_point_t sz;
+                const lv_font_t *font = lv_obj_get_style_text_font(tit, LV_PART_MAIN);
+                #if LVGL_VERSION_MAJOR >= 9
+                lv_text_get_size(&sz, k.title.c_str(), font, 0, 0, 10000, LV_TEXT_FLAG_NONE);
+                #else
+                lv_txt_get_size(&sz, k.title.c_str(), font, 0, 0, 10000, LV_TEXT_FLAG_NONE);
+                #endif
+                icon_an = sz.x <= beside_w;
+              }
+              if (icon_an) {
+                lv_obj_clear_flag(ico, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_set_x(tit, 42);
+                lv_obj_set_width(tit, beside_w);
+              } else {
+                lv_obj_add_flag(ico, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_set_x(tit, 0);
+                lv_obj_set_width(tit, full_w);
+              }
+            };
+
+            // ---- volle Kachelansicht ----
+            lv_obj_t *fb[12] = {id(tile_0), id(tile_1), id(tile_2), id(tile_3), id(tile_4), id(tile_5), id(tile_6), id(tile_7), id(tile_8), id(tile_9), id(tile_10), id(tile_11)};
+            lv_obj_t *fi[12] = {id(tile_0_icon), id(tile_1_icon), id(tile_2_icon), id(tile_3_icon), id(tile_4_icon), id(tile_5_icon), id(tile_6_icon), id(tile_7_icon), id(tile_8_icon), id(tile_9_icon), id(tile_10_icon), id(tile_11_icon)};
+            lv_obj_t *ft[12] = {id(tile_0_title), id(tile_1_title), id(tile_2_title), id(tile_3_title), id(tile_4_title), id(tile_5_title), id(tile_6_title), id(tile_7_title), id(tile_8_title), id(tile_9_title), id(tile_10_title), id(tile_11_title)};
+            lv_obj_t *fv[12] = {id(tile_0_value), id(tile_1_value), id(tile_2_value), id(tile_3_value), id(tile_4_value), id(tile_5_value), id(tile_6_value), id(tile_7_value), id(tile_8_value), id(tile_9_value), id(tile_10_value), id(tile_11_value)};
+            lv_obj_t *fd[12] = {id(tile_0_detail), id(tile_1_detail), id(tile_2_detail), id(tile_3_detail), id(tile_4_detail), id(tile_5_detail), id(tile_6_detail), id(tile_7_detail), id(tile_8_detail), id(tile_9_detail), id(tile_10_detail), id(tile_11_detail)};
+            lv_obj_t *fp[12] = {id(tile_0_bar), id(tile_1_bar), id(tile_2_bar), id(tile_3_bar), id(tile_4_bar), id(tile_5_bar), id(tile_6_bar), id(tile_7_bar), id(tile_8_bar), id(tile_9_bar), id(tile_10_bar), id(tile_11_bar)};
+            for (size_t i = 0; i < 12; i++) {
+              if (i < n) {
+                fill(list[i], fb[i], fi[i], ft[i], fv[i], fd[i], fp[i]);
+                title_layout(list[i], fi[i], ft[i], 164);
+                id(tile_ids)[i] = list[i].id;
+                id(tile_taps)[i] = list[i].tap;
+              } else {
+                lv_obj_add_flag(fb[i], LV_OBJ_FLAG_HIDDEN);
+                id(tile_ids)[i] = "";
+                id(tile_taps)[i] = "none";
+              }
+            }
+
+            // ---- kleine Kacheln in der Grundansicht ----
+            lv_obj_t *mb[4] = {id(mini_0), id(mini_1), id(mini_2), id(mini_3)};
+            lv_obj_t *mi[4] = {id(mini_0_icon), id(mini_1_icon), id(mini_2_icon), id(mini_3_icon)};
+            lv_obj_t *mt[4] = {id(mini_0_title), id(mini_1_title), id(mini_2_title), id(mini_3_title)};
+            lv_obj_t *mv[4] = {id(mini_0_value), id(mini_1_value), id(mini_2_value), id(mini_3_value)};
+            lv_obj_t *md[4] = {id(mini_0_detail), id(mini_1_detail), id(mini_2_detail), id(mini_3_detail)};
+            lv_obj_t *mp[4] = {id(mini_0_bar), id(mini_1_bar), id(mini_2_bar), id(mini_3_bar)};
+            for (size_t i = 0; i < 4; i++) {
+              if (i >= n) { lv_obj_add_flag(mb[i], LV_OBJ_FLAG_HIDDEN); continue; }
+              fill(list[i], mb[i], mi[i], mt[i], mv[i], md[i], mp[i]);
+              title_layout(list[i], mi[i], mt[i], 156);
+            }
+            if (n > 4) {
+              lv_label_set_text(id(mini_more_label), str_sprintf("+%u", (unsigned) (n - 4)).c_str());
+              lv_obj_clear_flag(id(mini_more), LV_OBJ_FLAG_HIDDEN);
+            } else {
+              lv_obj_add_flag(id(mini_more), LV_OBJ_FLAG_HIDDEN);
+            }
+
+            // Ruhezustand (Sonne) nur ohne Kacheln
+            if (n == 0) {
+              lv_obj_clear_flag(id(sun_panel), LV_OBJ_FLAG_HIDDEN);
+              lv_obj_add_flag(id(tiles_view), LV_OBJ_FLAG_HIDDEN);   // nichts mehr zu zeigen
+            } else {
+              lv_obj_add_flag(id(sun_panel), LV_OBJ_FLAG_HIDDEN);
+            }
+
+            // ---- Alarm-Hinweisfeld ----
+            const Tile *alarm = nullptr;
+            for (auto &k : list) if (k.status == "alarm") { alarm = &k; break; }
+            if (alarm != nullptr) {
+              lv_label_set_text(id(alarm_icon), id(icon_glyph)(alarm->icon).c_str());
+              std::string head = alarm->title;
+              if (!alarm->value.empty()) head += "  " + alarm->value;
+              lv_label_set_text(id(alarm_title), head.c_str());
+              lv_label_set_text(id(alarm_detail), alarm->detail.c_str());
+              lv_obj_clear_flag(id(alarm_banner), LV_OBJ_FLAG_HIDDEN);
+            } else {
+              lv_obj_add_flag(id(alarm_banner), LV_OBJ_FLAG_HIDDEN);
+            }
+            ESP_LOGI("tiles", "set_tiles: %u Kacheln, Alarm: %s", (unsigned) n, alarm ? "ja" : "nein");
+
+# OTA verschlüsselt mit dem Schlüssel aus api: encryption: (ab ESPHome 2026.9), kein Passwort nötig
+ota:
+  - platform: esphome
+    encryption:
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "Wall Display Fallback"
+    password: !secret ap_password
+
+captive_portal:
+
+# ============================================================================
+# Hardware (unverändert)
+# ============================================================================
+
+i2c:
+  - id: bus_a
+    sda: GPIO8
+    scl: GPIO9
+    scan: true
+
+ch422g:
+  - id: ch422g_hub
+
+touchscreen:
+  platform: gt911
+  id: my_touchscreen
+  i2c_id: bus_a
+  interrupt_pin: GPIO4
+  reset_pin:
+    ch422g: ch422g_hub
+    number: 1
+    mode: OUTPUT
+  transform:
+    swap_xy: false
+    mirror_x: false
+    mirror_y: false
+  on_release:
+    # Display aus -> Antippen schaltet wieder ein (Tipp löst sonst nichts aus)
+    - if:
+        condition: lvgl.is_paused
+        then:
+          - switch.turn_on: display_backlight
+
+display:
+  - platform: mipi_rgb
+    model: ESP32-S3-TOUCH-LCD-7-800X480
+    id: my_display
+    rotation: 0
+    update_interval: 1s
+    auto_clear_enabled: false
+    color_order: RGB
+    pclk_frequency: 16MHZ
+    dimensions:
+      width: 800
+      height: 480
+    reset_pin:
+      ch422g: ch422g_hub
+      number: 3
+    de_pin:
+      number: GPIO5
+    hsync_pin:
+      number: GPIO46
+      ignore_strapping_warning: true
+    vsync_pin:
+      number: GPIO3
+      ignore_strapping_warning: true
+    pclk_pin: GPIO7
+    pclk_inverted: true
+    hsync_back_porch: 8
+    hsync_front_porch: 8
+    hsync_pulse_width: 4
+    vsync_back_porch: 8
+    vsync_front_porch: 8
+    vsync_pulse_width: 4
+    data_pins:
+      red: [1, 2, 42, 41, 40]
+      blue: [14, 38, 18, 17, 10]
+      green: [39, 0, 45, 48, 47, 21]
+
+# ============================================================================
+# Display: An/Aus + Dimmen (HA steuert die Helligkeit nach Tageszeit)
+# Backlight hängt an CH422G EXIO2 (nur an/aus, kein PWM). Der Pin wird vom
+# Display-Treiber belegt, daher direkt über den Expander schalten.
+# Dimmen geschieht über ein schwarzes LVGL-Overlay (dim_overlay).
+# ============================================================================
+
+switch:
+  - platform: template
+    name: "Display Hintergrundbeleuchtung"
+    id: display_backlight
+    icon: mdi:monitor
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    turn_on_action:
+      - if:
+          condition:
+            lambda: 'return id(boot_done);'
+          then:
+            - lambda: 'id(ch422g_hub)->digital_write(2, true);'
+            - lvgl.resume:
+            - lvgl.widget.redraw:
+    turn_off_action:
+      - if:
+          condition:
+            lambda: 'return id(boot_done);'
+          then:
+            - lambda: 'id(ch422g_hub)->digital_write(2, false);'
+            - lvgl.pause:
+
+number:
+  - platform: template
+    name: "Display Helligkeit"
+    id: display_helligkeit
+    icon: mdi:brightness-6
+    unit_of_measurement: "%"
+    min_value: 10
+    max_value: 100
+    step: 5
+    mode: slider
+    optimistic: true
+    restore_value: true
+    initial_value: 100
+    set_action:
+      - script.execute:
+          id: apply_dimming
+          level: !lambda 'return x;'
+
+# ============================================================================
+# Zeit: von HA; SNTP als Rückfall, damit die Uhr auch ohne HA läuft
+# ============================================================================
+
+time:
+  - platform: homeassistant
+    id: ha_time
+  - platform: sntp
+    id: sntp_time
+    timezone: Europe/Berlin
+    on_time:
+      - seconds: 0
+        then:
+          - lvgl.widget.refresh: clock_label
+          - lvgl.widget.refresh: date_label
+
+interval:
+  # Fallback, falls on_time noch nicht greift (z. B. direkt nach dem Start)
+  - interval: 5s
+    then:
+      - lvgl.widget.refresh: clock_label
+      - lvgl.widget.refresh: date_label
+
+# ============================================================================
+# Daten der Grundansicht (4.5): ausschließlich sensor.ws_*
+# ============================================================================
+
+sensor:
+  - platform: homeassistant
+    id: ws_aussen_temp
+    entity_id: sensor.ws_outdoor_temp
+    internal: true
+    on_value:
+      - lvgl.widget.refresh: out_temp
+  - platform: homeassistant
+    id: ws_aussen_max
+    entity_id: sensor.ws_outdoor_max
+    internal: true
+    on_value:
+      - lvgl.widget.refresh: out_maxmin
+  - platform: homeassistant
+    id: ws_aussen_min
+    entity_id: sensor.ws_outdoor_min
+    internal: true
+    on_value:
+      - lvgl.widget.refresh: out_maxmin
+  - platform: homeassistant
+    id: ws_aussen_feuchte
+    entity_id: sensor.ws_outdoor_humidity
+    internal: true
+    on_value:
+      - lvgl.widget.refresh: out_hum
+  - platform: homeassistant
+    id: ws_innen_temp
+    entity_id: sensor.ws_indoor_temp
+    internal: true
+    on_value:
+      - lvgl.widget.refresh: in_temp
+  - platform: homeassistant
+    id: ws_innen_feuchte
+    entity_id: sensor.ws_indoor_humidity
+    internal: true
+    on_value:
+      - lvgl.widget.refresh: in_hum
+  - platform: homeassistant
+    id: ws_vh_max
+    entity_id: sensor.ws_forecast
+    attribute: temp_max
+    internal: true
+    on_value:
+      - lvgl.widget.refresh: fc_maxmin
+  - platform: homeassistant
+    id: ws_vh_min
+    entity_id: sensor.ws_forecast
+    attribute: temp_min
+    internal: true
+    on_value:
+      - lvgl.widget.refresh: fc_maxmin
+
+text_sensor:
+  - platform: homeassistant
+    id: ws_komfort
+    entity_id: sensor.ws_comfort
+    internal: true
+    on_value:
+      - lambda: |-
+          // Smiley-Farbe: gut = grün, Abweichung = bernstein, unbekannt = grau
+          uint32_t c = 0x607D8B;
+          if (x == "gut") c = 0x81C784;
+          else if (x == "trocken" || x == "feucht" || x == "kalt" || x == "warm") c = 0xFFB74D;
+          lv_obj_set_style_text_color(id(in_smiley), lv_color_hex(c), LV_PART_MAIN);
+      - lvgl.widget.refresh: in_smiley
+      - lvgl.widget.refresh: in_komfort
+  - platform: homeassistant
+    id: ws_vh_symbol
+    entity_id: sensor.ws_forecast
+    attribute: symbol
+    internal: true
+    on_value:
+      - lvgl.widget.refresh: fc_icon
+  - platform: homeassistant
+    id: ws_vh_text
+    entity_id: sensor.ws_forecast
+    attribute: text
+    internal: true
+    on_value:
+      - lvgl.widget.refresh: fc_text
+  - platform: homeassistant
+    id: ws_vh_regen
+    entity_id: sensor.ws_forecast
+    attribute: rain
+    internal: true
+    on_value:
+      - lvgl.widget.refresh: fc_rain
+  - platform: homeassistant
+    id: ws_sonnenaufgang
+    entity_id: sensor.ws_sunrise
+    internal: true
+    on_value:
+      - lvgl.widget.refresh: sun_rise
+  - platform: homeassistant
+    id: ws_sonnenuntergang
+    entity_id: sensor.ws_sunset
+    internal: true
+    on_value:
+      - lvgl.widget.refresh: sun_set
+
+# ============================================================================
+# Zustand und Hilfsfunktionen
+# ============================================================================
+
+globals:
+  - id: boot_done
+    type: bool
+    initial_value: 'false'
+  - id: tile_ids
+    type: std::vector<std::string>
+    initial_value: 'std::vector<std::string>(12)'
+  - id: tile_taps
+    type: std::vector<std::string>
+    initial_value: 'std::vector<std::string>(12, "none")'
+  - id: q_request_id
+    type: std::string
+    initial_value: '""'
+  - id: q_active
+    type: bool
+    initial_value: 'false'
+  # 1.1 Status -> Farbe (unbekannt -> info)
+  - id: status_color
+    type: std::function<uint32_t(const std::string &)>
+    initial_value: |-
+      [](const std::string &s) -> uint32_t {
+        if (s == "alarm") return 0xE53935;
+        if (s == "warn")  return 0xFB8C00;
+        if (s == "ok")    return 0x43A047;
+        if (s == "on")    return 0xFDD835;
+        if (s == "off")   return 0x616161;
+        return 0x1E88E5;
+      }
+  # 1.2 Icon-Name (ohne "mdi:") -> Glyphe (unbekannt -> information)
+  - id: icon_glyph
+    type: std::function<std::string(const std::string &)>
+    initial_value: |-
+      [](const std::string &name) -> std::string {
+        static const std::map<std::string, std::string> m = {
+          {"check", "\U000F012C"},
+          {"close", "\U000F0156"},
+          {"alert", "\U000F0026"},
+          {"information", "\U000F02FC"},
+          {"help", "\U000F02D6"},
+          {"trash-can", "\U000F0A79"},
+          {"train", "\U000F052C"},
+          {"washing-machine", "\U000F072A"},
+          {"thermometer", "\U000F050F"},
+          {"water-alert", "\U000F1502"},
+          {"battery-alert", "\U000F0083"},
+          {"power-plug", "\U000F06A5"},
+          {"pool", "\U000F0606"},
+          {"door-open", "\U000F081C"},
+          {"molecule-co2", "\U000F07E4"},
+          {"solar-power", "\U000F0A72"},
+          {"printer", "\U000F042A"},
+          {"cart", "\U000F0110"},
+          {"wifi", "\U000F05A9"},
+          {"bicycle-electric", "\U000F15B4"},
+          {"pump", "\U000F1402"},
+          {"calendar", "\U000F00ED"},
+          {"lightbulb", "\U000F0335"},
+          {"fire", "\U000F0238"},
+          {"printer-3d", "\U000F042B"},
+          {"printer-3d-nozzle-alert", "\U000F11C0"},
+          {"heat-pump", "\U000F1A43"},
+          {"fan-alert", "\U000F146C"},
+          {"window-shutter", "\U000F111C"},
+          {"window-shutter-open", "\U000F111E"},
+          {"weather-sunny", "\U000F0599"},
+          {"weather-night", "\U000F0594"},
+          {"weather-partly-cloudy", "\U000F0595"},
+          {"weather-cloudy", "\U000F0590"},
+          {"weather-rainy", "\U000F0597"},
+          {"weather-pouring", "\U000F0596"},
+          {"weather-snowy", "\U000F0598"},
+          {"weather-snowy-rainy", "\U000F067F"},
+          {"weather-fog", "\U000F0591"},
+          {"weather-hail", "\U000F0592"},
+          {"weather-lightning", "\U000F0593"},
+          {"weather-lightning-rainy", "\U000F067E"},
+          {"weather-windy", "\U000F059D"},
+          {"flash", "\U000F0241"},
+          {"thermometer-alert", "\U000F0E01"},
+          {"thermometer-high", "\U000F10C2"},
+          {"washing-machine-alert", "\U000F11BC"},
+          {"water-percent-alert", "\U000F1509"},
+          {"water-thermometer", "\U000F1A85"},
+          {"wrench", "\U000F05B7"},
+          {"phone-ring", "\U000F11AB"},
+          {"phone-missed", "\U000F03FA"},
+          {"snowflake-alert", "\U000F0F29"},
+          {"weather-snowy-heavy", "\U000F0F36"},
+          {"trash-can-outline", "\U000F0A7A"}
+        };
+        std::string k = name;
+        if (k.rfind("mdi:", 0) == 0) k = k.substr(4);
+        auto it = m.find(k);
+        return it != m.end() ? it->second : m.at("information");
+      }
+  # Zahl mit deutschem Komma; NaN -> "--"
+  - id: fmt_num
+    type: std::function<std::string(float, int)>
+    initial_value: |-
+      [](float v, int dec) -> std::string {
+        if (isnan(v)) return std::string("--");
+        std::string s = str_sprintf(dec == 0 ? "%.0f" : "%.1f", v);
+        if (s == "-0" || s == "-0.0") s = s.substr(1);
+        for (auto &ch : s) if (ch == '.') ch = ',';
+        return s;
+      }
+  # Gültige Zeit: HA bevorzugt, sonst SNTP
+  - id: now_time
+    type: std::function<esphome::ESPTime()>
+    initial_value: |-
+      []() -> esphome::ESPTime {
+        auto t = id(ha_time).now();
+        if (!t.is_valid()) t = id(sntp_time).now();
+        return t;
+      }
+
+script:
+  - id: apply_dimming
+    parameters:
+      level: float
+    then:
+      - lambda: |-
+          // 100 % -> Overlay unsichtbar, 10 % -> Overlay ~90 % deckend
+          float l = level;
+          if (isnan(l)) l = 100.0f;
+          if (l < 10.0f) l = 10.0f;
+          if (l > 100.0f) l = 100.0f;
+          uint8_t opa = (uint8_t) ((100.0f - l) / 100.0f * 255.0f);
+          lv_obj_set_style_bg_opa(id(dim_overlay), opa, LV_PART_MAIN);
+
+  - id: answer_timer
+    mode: restart
+    parameters:
+      seconds: int
+    then:
+      - delay: !lambda 'return seconds * 1000;'
+      - lvgl.widget.hide: answer_popup
+
+  - id: question_timer
+    mode: restart
+    parameters:
+      seconds: int
+    then:
+      - delay: !lambda 'return seconds * 1000;'
+      - script.execute:
+          id: send_question_answer
+          answer: "timeout"
+
+  # Sendet genau ein Event esphome.display_question_answer und schließt den Dialog
+  - id: send_question_answer
+    mode: queued
+    parameters:
+      answer: string
+    then:
+      - if:
+          condition:
+            lambda: 'return id(q_active);'
+          then:
+            - lambda: 'id(q_active) = false;'
+            - homeassistant.event:
+                event: esphome.display_question_answer
+                data:
+                  device: !lambda 'return App.get_name();'
+                  request_id: !lambda 'return id(q_request_id);'
+                  answer: !lambda 'return answer;'
+            - lvgl.widget.hide: question_popup
+
+  # Volle Kachelansicht: öffnen, nach 60 s ohne Berührung zurück zur Grundansicht
+  - id: open_tiles_view
+    mode: restart
+    then:
+      - lvgl.widget.show: tiles_view
+      - script.execute: tiles_view_timer
+  - id: tiles_view_timer
+    mode: restart
+    then:
+      - delay: 60s
+      - lvgl.widget.hide: tiles_view
+
+# ============================================================================
+# Schriften
+# ============================================================================
+
+font:
+  - file:
+      type: gfonts
+      family: Roboto
+      weight: 400
+    id: f14
+    size: 14
+    glyphsets: [GF_Latin_Core]
+    ignore_missing_glyphs: true
+  - file:
+      type: gfonts
+      family: Roboto
+      weight: 400
+    id: f20
+    size: 20
+    glyphsets: [GF_Latin_Core]
+    ignore_missing_glyphs: true
+  - file:
+      type: gfonts
+      family: Roboto
+      weight: 700
+    id: f20b
+    size: 20
+    glyphsets: [GF_Latin_Core]
+    ignore_missing_glyphs: true
+  - file:
+      type: gfonts
+      family: Roboto
+      weight: 700
+    id: f26b
+    size: 26
+    glyphsets: [GF_Latin_Core]
+    ignore_missing_glyphs: true
+  - file:
+      type: gfonts
+      family: Roboto
+      weight: 700
+    id: f44b
+    size: 44
+    glyphsets: [GF_Latin_Core]
+    ignore_missing_glyphs: true
+  # große Ziffern: Temperaturen und Uhr (nur benötigte Zeichen, spart Flash)
+  - file:
+      type: gfonts
+      family: Roboto
+      weight: 500
+    id: f64
+    size: 64
+    glyphs: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "-", ",", "°", " "]
+  - file:
+      type: gfonts
+      family: Roboto
+      weight: 300
+    id: f120
+    size: 120
+    glyphs: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ":", "-"]
+  # MDI-Icons (Schnittstelle 1.2, v1 + v1.3) für Kacheln, Popups, Vorhersage
+  - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
+    id: mdi36
+    size: 36
+    glyphs: ["\U000F012C", "\U000F0156", "\U000F0026", "\U000F02FC", "\U000F02D6", "\U000F0A79", "\U000F052C", "\U000F072A", "\U000F050F", "\U000F1502", "\U000F0083", "\U000F06A5", "\U000F0606", "\U000F081C", "\U000F07E4", "\U000F0A72", "\U000F042A", "\U000F0110", "\U000F05A9", "\U000F15B4", "\U000F1402", "\U000F00ED", "\U000F0335", "\U000F0238", "\U000F042B", "\U000F11C0", "\U000F1A43", "\U000F146C", "\U000F111C", "\U000F111E", "\U000F0599", "\U000F0594", "\U000F0595", "\U000F0590", "\U000F0597", "\U000F0596", "\U000F0598", "\U000F067F", "\U000F0591", "\U000F0592", "\U000F0593", "\U000F067E", "\U000F059D", "\U000F0241", "\U000F0E01", "\U000F10C2", "\U000F11BC", "\U000F1509", "\U000F1A85", "\U000F05B7", "\U000F11AB", "\U000F03FA", "\U000F0F29", "\U000F0F36", "\U000F0A7A", "\U000F059C", "\U000F059B", "\U000F058E", "\U000F054B"]
+  - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
+    id: mdi72
+    size: 72
+    glyphs: ["\U000F012C", "\U000F0156", "\U000F0026", "\U000F02FC", "\U000F02D6", "\U000F0A79", "\U000F052C", "\U000F072A", "\U000F050F", "\U000F1502", "\U000F0083", "\U000F06A5", "\U000F0606", "\U000F081C", "\U000F07E4", "\U000F0A72", "\U000F042A", "\U000F0110", "\U000F05A9", "\U000F15B4", "\U000F1402", "\U000F00ED", "\U000F0335", "\U000F0238", "\U000F042B", "\U000F11C0", "\U000F1A43", "\U000F146C", "\U000F111C", "\U000F111E", "\U000F0599", "\U000F0594", "\U000F0595", "\U000F0590", "\U000F0597", "\U000F0596", "\U000F0598", "\U000F067F", "\U000F0591", "\U000F0592", "\U000F0593", "\U000F067E", "\U000F059D", "\U000F0241", "\U000F0E01", "\U000F10C2", "\U000F11BC", "\U000F1509", "\U000F1A85", "\U000F05B7", "\U000F11AB", "\U000F03FA", "\U000F0F29", "\U000F0F36", "\U000F0A7A"]
+  - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
+    id: mdi48
+    size: 48
+    glyphs: ["\U000F01F5", "\U000F01F6", "\U000F01F2"]
+  - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
+    id: mdi20
+    size: 20
+    glyphs: ["\U000F058E", "\U000F054B"]
+
+# ============================================================================
+# LVGL
+# ============================================================================
+
+lvgl:
+  id: my_lvgl
+  log_level: WARN
+  bg_color: 0x000000
+  displays:
+    - my_display
+  touchscreens:
+    - touchscreen_id: my_touchscreen
+
+  style_definitions:
+    - id: panel
+      bg_color: 0x12161B
+      bg_opa: COVER
+      border_width: 1
+      border_color: 0x232A33
+      radius: 14
+      pad_all: 12
+    - id: plain
+      bg_opa: TRANSP
+      border_width: 0
+      radius: 0
+      pad_all: 0
+
+  top_layer:
+    widgets:
+      # ---------------- volle Kachelansicht (4x3) ----------------
+      - obj:
+          id: tiles_view
+          x: 0
+          y: 0
+          width: 800
+          height: 480
+          hidden: true
+          bg_color: 0x000000
+          bg_opa: COVER
+          border_width: 0
+          radius: 0
+          pad_all: 0
+          scrollable: false
+          on_press:
+            - script.execute: tiles_view_timer
+          widgets:
+            - label:
+                x: 16
+                y: 14
+                text_font: f26b
+                text_color: 0xECEFF1
+                text: "Hinweise"
+            - button:
+                x: 640
+                y: 6
+                width: 152
+                height: 44
+                bg_color: 0x263238
+                radius: 10
+                on_click:
+                  - script.stop: tiles_view_timer
+                  - lvgl.widget.hide: tiles_view
+                widgets:
+                  - label:
+                      align: CENTER
+                      text_font: f20
+                      text_color: 0xECEFF1
+                      text: "Zurück"
+            - obj:
+                id: tile_0
+                x: 8
+                y: 64
+                width: 190
+                height: 130
+                hidden: true
+                styles: panel
+                border_width: 3
+                pad_all: 10
+                scrollable: false
+                pressed:
+                  bg_color: 0x2A3038
+                on_click:
+                  - script.execute: tiles_view_timer
+                  - if:
+                      condition:
+                        lambda: 'return id(tile_taps)[0] != "none" && !id(tile_taps)[0].empty();'
+                      then:
+                        - homeassistant.event:
+                            event: esphome.display_tap
+                            data:
+                              device: !lambda 'return App.get_name();'
+                              id: !lambda 'return id(tile_ids)[0];'
+                              tap: !lambda 'return id(tile_taps)[0];'
+                widgets:
+                  # Icon und Titelbreite setzt set_tiles (Icon nur, wenn der Titel daneben passt)
+                  - label:
+                      id: tile_0_icon
+                      x: 0
+                      y: 0
+                      text_font: mdi36
+                      text: " "
+                  - label:
+                      id: tile_0_title
+                      x: 42
+                      y: 6
+                      width: 122
+                      long_mode: DOT
+                      height: 24
+                      text_font: f20
+                      text_color: 0x90A4AE
+                      text: ""
+                  - label:
+                      id: tile_0_value
+                      x: 0
+                      y: 40
+                      width: 164
+                      long_mode: DOT
+                      height: 24
+                      text_font: f20b
+                      text_color: 0xECEFF1
+                      text: ""
+                  # Detail: bis zu 2 Zeilen, danach "…"
+                  - label:
+                      id: tile_0_detail
+                      x: 0
+                      y: 64
+                      width: 164
+                      height: 34
+                      long_mode: DOT
+                      text_font: f14
+                      text_color: 0x90A4AE
+                      text: ""
+                  - bar:
+                      id: tile_0_bar
+                      x: 0
+                      y: 98
+                      width: 164
+                      height: 6
+                      min_value: 0
+                      max_value: 100
+                      value: 0
+                      hidden: true
+                      clickable: false
+                      bg_color: 0x37474F
+                      indicator:
+                        bg_color: 0x1E88E5
+            - obj:
+                id: tile_1
+                x: 206
+                y: 64
+                width: 190
+                height: 130
+                hidden: true
+                styles: panel
+                border_width: 3
+                pad_all: 10
+                scrollable: false
+                pressed:
+                  bg_color: 0x2A3038
+                on_click:
+                  - script.execute: tiles_view_timer
+                  - if:
+                      condition:
+                        lambda: 'return id(tile_taps)[1] != "none" && !id(tile_taps)[1].empty();'
+                      then:
+                        - homeassistant.event:
+                            event: esphome.display_tap
+                            data:
+                              device: !lambda 'return App.get_name();'
+                              id: !lambda 'return id(tile_ids)[1];'
+                              tap: !lambda 'return id(tile_taps)[1];'
+                widgets:
+                  # Icon und Titelbreite setzt set_tiles (Icon nur, wenn der Titel daneben passt)
+                  - label:
+                      id: tile_1_icon
+                      x: 0
+                      y: 0
+                      text_font: mdi36
+                      text: " "
+                  - label:
+                      id: tile_1_title
+                      x: 42
+                      y: 6
+                      width: 122
+                      long_mode: DOT
+                      height: 24
+                      text_font: f20
+                      text_color: 0x90A4AE
+                      text: ""
+                  - label:
+                      id: tile_1_value
+                      x: 0
+                      y: 40
+                      width: 164
+                      long_mode: DOT
+                      height: 24
+                      text_font: f20b
+                      text_color: 0xECEFF1
+                      text: ""
+                  # Detail: bis zu 2 Zeilen, danach "…"
+                  - label:
+                      id: tile_1_detail
+                      x: 0
+                      y: 64
+                      width: 164
+                      height: 34
+                      long_mode: DOT
+                      text_font: f14
+                      text_color: 0x90A4AE
+                      text: ""
+                  - bar:
+                      id: tile_1_bar
+                      x: 0
+                      y: 98
+                      width: 164
+                      height: 6
+                      min_value: 0
+                      max_value: 100
+                      value: 0
+                      hidden: true
+                      clickable: false
+                      bg_color: 0x37474F
+                      indicator:
+                        bg_color: 0x1E88E5
+            - obj:
+                id: tile_2
+                x: 404
+                y: 64
+                width: 190
+                height: 130
+                hidden: true
+                styles: panel
+                border_width: 3
+                pad_all: 10
+                scrollable: false
+                pressed:
+                  bg_color: 0x2A3038
+                on_click:
+                  - script.execute: tiles_view_timer
+                  - if:
+                      condition:
+                        lambda: 'return id(tile_taps)[2] != "none" && !id(tile_taps)[2].empty();'
+                      then:
+                        - homeassistant.event:
+                            event: esphome.display_tap
+                            data:
+                              device: !lambda 'return App.get_name();'
+                              id: !lambda 'return id(tile_ids)[2];'
+                              tap: !lambda 'return id(tile_taps)[2];'
+                widgets:
+                  # Icon und Titelbreite setzt set_tiles (Icon nur, wenn der Titel daneben passt)
+                  - label:
+                      id: tile_2_icon
+                      x: 0
+                      y: 0
+                      text_font: mdi36
+                      text: " "
+                  - label:
+                      id: tile_2_title
+                      x: 42
+                      y: 6
+                      width: 122
+                      long_mode: DOT
+                      height: 24
+                      text_font: f20
+                      text_color: 0x90A4AE
+                      text: ""
+                  - label:
+                      id: tile_2_value
+                      x: 0
+                      y: 40
+                      width: 164
+                      long_mode: DOT
+                      height: 24
+                      text_font: f20b
+                      text_color: 0xECEFF1
+                      text: ""
+                  # Detail: bis zu 2 Zeilen, danach "…"
+                  - label:
+                      id: tile_2_detail
+                      x: 0
+                      y: 64
+                      width: 164
+                      height: 34
+                      long_mode: DOT
+                      text_font: f14
+                      text_color: 0x90A4AE
+                      text: ""
+                  - bar:
+                      id: tile_2_bar
+                      x: 0
+                      y: 98
+                      width: 164
+                      height: 6
+                      min_value: 0
+                      max_value: 100
+                      value: 0
+                      hidden: true
+                      clickable: false
+                      bg_color: 0x37474F
+                      indicator:
+                        bg_color: 0x1E88E5
+            - obj:
+                id: tile_3
+                x: 602
+                y: 64
+                width: 190
+                height: 130
+                hidden: true
+                styles: panel
+                border_width: 3
+                pad_all: 10
+                scrollable: false
+                pressed:
+                  bg_color: 0x2A3038
+                on_click:
+                  - script.execute: tiles_view_timer
+                  - if:
+                      condition:
+                        lambda: 'return id(tile_taps)[3] != "none" && !id(tile_taps)[3].empty();'
+                      then:
+                        - homeassistant.event:
+                            event: esphome.display_tap
+                            data:
+                              device: !lambda 'return App.get_name();'
+                              id: !lambda 'return id(tile_ids)[3];'
+                              tap: !lambda 'return id(tile_taps)[3];'
+                widgets:
+                  # Icon und Titelbreite setzt set_tiles (Icon nur, wenn der Titel daneben passt)
+                  - label:
+                      id: tile_3_icon
+                      x: 0
+                      y: 0
+                      text_font: mdi36
+                      text: " "
+                  - label:
+                      id: tile_3_title
+                      x: 42
+                      y: 6
+                      width: 122
+                      long_mode: DOT
+                      height: 24
+                      text_font: f20
+                      text_color: 0x90A4AE
+                      text: ""
+                  - label:
+                      id: tile_3_value
+                      x: 0
+                      y: 40
+                      width: 164
+                      long_mode: DOT
+                      height: 24
+                      text_font: f20b
+                      text_color: 0xECEFF1
+                      text: ""
+                  # Detail: bis zu 2 Zeilen, danach "…"
+                  - label:
+                      id: tile_3_detail
+                      x: 0
+                      y: 64
+                      width: 164
+                      height: 34
+                      long_mode: DOT
+                      text_font: f14
+                      text_color: 0x90A4AE
+                      text: ""
+                  - bar:
+                      id: tile_3_bar
+                      x: 0
+                      y: 98
+                      width: 164
+                      height: 6
+                      min_value: 0
+                      max_value: 100
+                      value: 0
+                      hidden: true
+                      clickable: false
+                      bg_color: 0x37474F
+                      indicator:
+                        bg_color: 0x1E88E5
+            - obj:
+                id: tile_4
+                x: 8
+                y: 202
+                width: 190
+                height: 130
+                hidden: true
+                styles: panel
+                border_width: 3
+                pad_all: 10
+                scrollable: false
+                pressed:
+                  bg_color: 0x2A3038
+                on_click:
+                  - script.execute: tiles_view_timer
+                  - if:
+                      condition:
+                        lambda: 'return id(tile_taps)[4] != "none" && !id(tile_taps)[4].empty();'
+                      then:
+                        - homeassistant.event:
+                            event: esphome.display_tap
+                            data:
+                              device: !lambda 'return App.get_name();'
+                              id: !lambda 'return id(tile_ids)[4];'
+                              tap: !lambda 'return id(tile_taps)[4];'
+                widgets:
+                  # Icon und Titelbreite setzt set_tiles (Icon nur, wenn der Titel daneben passt)
+                  - label:
+                      id: tile_4_icon
+                      x: 0
+                      y: 0
+                      text_font: mdi36
+                      text: " "
+                  - label:
+                      id: tile_4_title
+                      x: 42
+                      y: 6
+                      width: 122
+                      long_mode: DOT
+                      height: 24
+                      text_font: f20
+                      text_color: 0x90A4AE
+                      text: ""
+                  - label:
+                      id: tile_4_value
+                      x: 0
+                      y: 40
+                      width: 164
+                      long_mode: DOT
+                      height: 24
+                      text_font: f20b
+                      text_color: 0xECEFF1
+                      text: ""
+                  # Detail: bis zu 2 Zeilen, danach "…"
+                  - label:
+                      id: tile_4_detail
+                      x: 0
+                      y: 64
+                      width: 164
+                      height: 34
+                      long_mode: DOT
+                      text_font: f14
+                      text_color: 0x90A4AE
+                      text: ""
+                  - bar:
+                      id: tile_4_bar
+                      x: 0
+                      y: 98
+                      width: 164
+                      height: 6
+                      min_value: 0
+                      max_value: 100
+                      value: 0
+                      hidden: true
+                      clickable: false
+                      bg_color: 0x37474F
+                      indicator:
+                        bg_color: 0x1E88E5
+            - obj:
+                id: tile_5
+                x: 206
+                y: 202
+                width: 190
+                height: 130
+                hidden: true
+                styles: panel
+                border_width: 3
+                pad_all: 10
+                scrollable: false
+                pressed:
+                  bg_color: 0x2A3038
+                on_click:
+                  - script.execute: tiles_view_timer
+                  - if:
+                      condition:
+                        lambda: 'return id(tile_taps)[5] != "none" && !id(tile_taps)[5].empty();'
+                      then:
+                        - homeassistant.event:
+                            event: esphome.display_tap
+                            data:
+                              device: !lambda 'return App.get_name();'
+                              id: !lambda 'return id(tile_ids)[5];'
+                              tap: !lambda 'return id(tile_taps)[5];'
+                widgets:
+                  # Icon und Titelbreite setzt set_tiles (Icon nur, wenn der Titel daneben passt)
+                  - label:
+                      id: tile_5_icon
+                      x: 0
+                      y: 0
+                      text_font: mdi36
+                      text: " "
+                  - label:
+                      id: tile_5_title
+                      x: 42
+                      y: 6
+                      width: 122
+                      long_mode: DOT
+                      height: 24
+                      text_font: f20
+                      text_color: 0x90A4AE
+                      text: ""
+                  - label:
+                      id: tile_5_value
+                      x: 0
+                      y: 40
+                      width: 164
+                      long_mode: DOT
+                      height: 24
+                      text_font: f20b
+                      text_color: 0xECEFF1
+                      text: ""
+                  # Detail: bis zu 2 Zeilen, danach "…"
+                  - label:
+                      id: tile_5_detail
+                      x: 0
+                      y: 64
+                      width: 164
+                      height: 34
+                      long_mode: DOT
+                      text_font: f14
+                      text_color: 0x90A4AE
+                      text: ""
+                  - bar:
+                      id: tile_5_bar
+                      x: 0
+                      y: 98
+                      width: 164
+                      height: 6
+                      min_value: 0
+                      max_value: 100
+                      value: 0
+                      hidden: true
+                      clickable: false
+                      bg_color: 0x37474F
+                      indicator:
+                        bg_color: 0x1E88E5
+            - obj:
+                id: tile_6
+                x: 404
+                y: 202
+                width: 190
+                height: 130
+                hidden: true
+                styles: panel
+                border_width: 3
+                pad_all: 10
+                scrollable: false
+                pressed:
+                  bg_color: 0x2A3038
+                on_click:
+                  - script.execute: tiles_view_timer
+                  - if:
+                      condition:
+                        lambda: 'return id(tile_taps)[6] != "none" && !id(tile_taps)[6].empty();'
+                      then:
+                        - homeassistant.event:
+                            event: esphome.display_tap
+                            data:
+                              device: !lambda 'return App.get_name();'
+                              id: !lambda 'return id(tile_ids)[6];'
+                              tap: !lambda 'return id(tile_taps)[6];'
+                widgets:
+                  # Icon und Titelbreite setzt set_tiles (Icon nur, wenn der Titel daneben passt)
+                  - label:
+                      id: tile_6_icon
+                      x: 0
+                      y: 0
+                      text_font: mdi36
+                      text: " "
+                  - label:
+                      id: tile_6_title
+                      x: 42
+                      y: 6
+                      width: 122
+                      long_mode: DOT
+                      height: 24
+                      text_font: f20
+                      text_color: 0x90A4AE
+                      text: ""
+                  - label:
+                      id: tile_6_value
+                      x: 0
+                      y: 40
+                      width: 164
+                      long_mode: DOT
+                      height: 24
+                      text_font: f20b
+                      text_color: 0xECEFF1
+                      text: ""
+                  # Detail: bis zu 2 Zeilen, danach "…"
+                  - label:
+                      id: tile_6_detail
+                      x: 0
+                      y: 64
+                      width: 164
+                      height: 34
+                      long_mode: DOT
+                      text_font: f14
+                      text_color: 0x90A4AE
+                      text: ""
+                  - bar:
+                      id: tile_6_bar
+                      x: 0
+                      y: 98
+                      width: 164
+                      height: 6
+                      min_value: 0
+                      max_value: 100
+                      value: 0
+                      hidden: true
+                      clickable: false
+                      bg_color: 0x37474F
+                      indicator:
+                        bg_color: 0x1E88E5
+            - obj:
+                id: tile_7
+                x: 602
+                y: 202
+                width: 190
+                height: 130
+                hidden: true
+                styles: panel
+                border_width: 3
+                pad_all: 10
+                scrollable: false
+                pressed:
+                  bg_color: 0x2A3038
+                on_click:
+                  - script.execute: tiles_view_timer
+                  - if:
+                      condition:
+                        lambda: 'return id(tile_taps)[7] != "none" && !id(tile_taps)[7].empty();'
+                      then:
+                        - homeassistant.event:
+                            event: esphome.display_tap
+                            data:
+                              device: !lambda 'return App.get_name();'
+                              id: !lambda 'return id(tile_ids)[7];'
+                              tap: !lambda 'return id(tile_taps)[7];'
+                widgets:
+                  # Icon und Titelbreite setzt set_tiles (Icon nur, wenn der Titel daneben passt)
+                  - label:
+                      id: tile_7_icon
+                      x: 0
+                      y: 0
+                      text_font: mdi36
+                      text: " "
+                  - label:
+                      id: tile_7_title
+                      x: 42
+                      y: 6
+                      width: 122
+                      long_mode: DOT
+                      height: 24
+                      text_font: f20
+                      text_color: 0x90A4AE
+                      text: ""
+                  - label:
+                      id: tile_7_value
+                      x: 0
+                      y: 40
+                      width: 164
+                      long_mode: DOT
+                      height: 24
+                      text_font: f20b
+                      text_color: 0xECEFF1
+                      text: ""
+                  # Detail: bis zu 2 Zeilen, danach "…"
+                  - label:
+                      id: tile_7_detail
+                      x: 0
+                      y: 64
+                      width: 164
+                      height: 34
+                      long_mode: DOT
+                      text_font: f14
+                      text_color: 0x90A4AE
+                      text: ""
+                  - bar:
+                      id: tile_7_bar
+                      x: 0
+                      y: 98
+                      width: 164
+                      height: 6
+                      min_value: 0
+                      max_value: 100
+                      value: 0
+                      hidden: true
+                      clickable: false
+                      bg_color: 0x37474F
+                      indicator:
+                        bg_color: 0x1E88E5
+            - obj:
+                id: tile_8
+                x: 8
+                y: 340
+                width: 190
+                height: 130
+                hidden: true
+                styles: panel
+                border_width: 3
+                pad_all: 10
+                scrollable: false
+                pressed:
+                  bg_color: 0x2A3038
+                on_click:
+                  - script.execute: tiles_view_timer
+                  - if:
+                      condition:
+                        lambda: 'return id(tile_taps)[8] != "none" && !id(tile_taps)[8].empty();'
+                      then:
+                        - homeassistant.event:
+                            event: esphome.display_tap
+                            data:
+                              device: !lambda 'return App.get_name();'
+                              id: !lambda 'return id(tile_ids)[8];'
+                              tap: !lambda 'return id(tile_taps)[8];'
+                widgets:
+                  # Icon und Titelbreite setzt set_tiles (Icon nur, wenn der Titel daneben passt)
+                  - label:
+                      id: tile_8_icon
+                      x: 0
+                      y: 0
+                      text_font: mdi36
+                      text: " "
+                  - label:
+                      id: tile_8_title
+                      x: 42
+                      y: 6
+                      width: 122
+                      long_mode: DOT
+                      height: 24
+                      text_font: f20
+                      text_color: 0x90A4AE
+                      text: ""
+                  - label:
+                      id: tile_8_value
+                      x: 0
+                      y: 40
+                      width: 164
+                      long_mode: DOT
+                      height: 24
+                      text_font: f20b
+                      text_color: 0xECEFF1
+                      text: ""
+                  # Detail: bis zu 2 Zeilen, danach "…"
+                  - label:
+                      id: tile_8_detail
+                      x: 0
+                      y: 64
+                      width: 164
+                      height: 34
+                      long_mode: DOT
+                      text_font: f14
+                      text_color: 0x90A4AE
+                      text: ""
+                  - bar:
+                      id: tile_8_bar
+                      x: 0
+                      y: 98
+                      width: 164
+                      height: 6
+                      min_value: 0
+                      max_value: 100
+                      value: 0
+                      hidden: true
+                      clickable: false
+                      bg_color: 0x37474F
+                      indicator:
+                        bg_color: 0x1E88E5
+            - obj:
+                id: tile_9
+                x: 206
+                y: 340
+                width: 190
+                height: 130
+                hidden: true
+                styles: panel
+                border_width: 3
+                pad_all: 10
+                scrollable: false
+                pressed:
+                  bg_color: 0x2A3038
+                on_click:
+                  - script.execute: tiles_view_timer
+                  - if:
+                      condition:
+                        lambda: 'return id(tile_taps)[9] != "none" && !id(tile_taps)[9].empty();'
+                      then:
+                        - homeassistant.event:
+                            event: esphome.display_tap
+                            data:
+                              device: !lambda 'return App.get_name();'
+                              id: !lambda 'return id(tile_ids)[9];'
+                              tap: !lambda 'return id(tile_taps)[9];'
+                widgets:
+                  # Icon und Titelbreite setzt set_tiles (Icon nur, wenn der Titel daneben passt)
+                  - label:
+                      id: tile_9_icon
+                      x: 0
+                      y: 0
+                      text_font: mdi36
+                      text: " "
+                  - label:
+                      id: tile_9_title
+                      x: 42
+                      y: 6
+                      width: 122
+                      long_mode: DOT
+                      height: 24
+                      text_font: f20
+                      text_color: 0x90A4AE
+                      text: ""
+                  - label:
+                      id: tile_9_value
+                      x: 0
+                      y: 40
+                      width: 164
+                      long_mode: DOT
+                      height: 24
+                      text_font: f20b
+                      text_color: 0xECEFF1
+                      text: ""
+                  # Detail: bis zu 2 Zeilen, danach "…"
+                  - label:
+                      id: tile_9_detail
+                      x: 0
+                      y: 64
+                      width: 164
+                      height: 34
+                      long_mode: DOT
+                      text_font: f14
+                      text_color: 0x90A4AE
+                      text: ""
+                  - bar:
+                      id: tile_9_bar
+                      x: 0
+                      y: 98
+                      width: 164
+                      height: 6
+                      min_value: 0
+                      max_value: 100
+                      value: 0
+                      hidden: true
+                      clickable: false
+                      bg_color: 0x37474F
+                      indicator:
+                        bg_color: 0x1E88E5
+            - obj:
+                id: tile_10
+                x: 404
+                y: 340
+                width: 190
+                height: 130
+                hidden: true
+                styles: panel
+                border_width: 3
+                pad_all: 10
+                scrollable: false
+                pressed:
+                  bg_color: 0x2A3038
+                on_click:
+                  - script.execute: tiles_view_timer
+                  - if:
+                      condition:
+                        lambda: 'return id(tile_taps)[10] != "none" && !id(tile_taps)[10].empty();'
+                      then:
+                        - homeassistant.event:
+                            event: esphome.display_tap
+                            data:
+                              device: !lambda 'return App.get_name();'
+                              id: !lambda 'return id(tile_ids)[10];'
+                              tap: !lambda 'return id(tile_taps)[10];'
+                widgets:
+                  # Icon und Titelbreite setzt set_tiles (Icon nur, wenn der Titel daneben passt)
+                  - label:
+                      id: tile_10_icon
+                      x: 0
+                      y: 0
+                      text_font: mdi36
+                      text: " "
+                  - label:
+                      id: tile_10_title
+                      x: 42
+                      y: 6
+                      width: 122
+                      long_mode: DOT
+                      height: 24
+                      text_font: f20
+                      text_color: 0x90A4AE
+                      text: ""
+                  - label:
+                      id: tile_10_value
+                      x: 0
+                      y: 40
+                      width: 164
+                      long_mode: DOT
+                      height: 24
+                      text_font: f20b
+                      text_color: 0xECEFF1
+                      text: ""
+                  # Detail: bis zu 2 Zeilen, danach "…"
+                  - label:
+                      id: tile_10_detail
+                      x: 0
+                      y: 64
+                      width: 164
+                      height: 34
+                      long_mode: DOT
+                      text_font: f14
+                      text_color: 0x90A4AE
+                      text: ""
+                  - bar:
+                      id: tile_10_bar
+                      x: 0
+                      y: 98
+                      width: 164
+                      height: 6
+                      min_value: 0
+                      max_value: 100
+                      value: 0
+                      hidden: true
+                      clickable: false
+                      bg_color: 0x37474F
+                      indicator:
+                        bg_color: 0x1E88E5
+            - obj:
+                id: tile_11
+                x: 602
+                y: 340
+                width: 190
+                height: 130
+                hidden: true
+                styles: panel
+                border_width: 3
+                pad_all: 10
+                scrollable: false
+                pressed:
+                  bg_color: 0x2A3038
+                on_click:
+                  - script.execute: tiles_view_timer
+                  - if:
+                      condition:
+                        lambda: 'return id(tile_taps)[11] != "none" && !id(tile_taps)[11].empty();'
+                      then:
+                        - homeassistant.event:
+                            event: esphome.display_tap
+                            data:
+                              device: !lambda 'return App.get_name();'
+                              id: !lambda 'return id(tile_ids)[11];'
+                              tap: !lambda 'return id(tile_taps)[11];'
+                widgets:
+                  # Icon und Titelbreite setzt set_tiles (Icon nur, wenn der Titel daneben passt)
+                  - label:
+                      id: tile_11_icon
+                      x: 0
+                      y: 0
+                      text_font: mdi36
+                      text: " "
+                  - label:
+                      id: tile_11_title
+                      x: 42
+                      y: 6
+                      width: 122
+                      long_mode: DOT
+                      height: 24
+                      text_font: f20
+                      text_color: 0x90A4AE
+                      text: ""
+                  - label:
+                      id: tile_11_value
+                      x: 0
+                      y: 40
+                      width: 164
+                      long_mode: DOT
+                      height: 24
+                      text_font: f20b
+                      text_color: 0xECEFF1
+                      text: ""
+                  # Detail: bis zu 2 Zeilen, danach "…"
+                  - label:
+                      id: tile_11_detail
+                      x: 0
+                      y: 64
+                      width: 164
+                      height: 34
+                      long_mode: DOT
+                      text_font: f14
+                      text_color: 0x90A4AE
+                      text: ""
+                  - bar:
+                      id: tile_11_bar
+                      x: 0
+                      y: 98
+                      width: 164
+                      height: 6
+                      min_value: 0
+                      max_value: 100
+                      value: 0
+                      hidden: true
+                      clickable: false
+                      bg_color: 0x37474F
+                      indicator:
+                        bg_color: 0x1E88E5
+
+      # ---------------- show_answer: Popup, Tippen schließt ----------------
+      - obj:
+          id: answer_popup
+          x: 0
+          y: 0
+          width: 100%
+          height: 100%
+          hidden: true
+          bg_color: 0x000000
+          bg_opa: 60%
+          border_width: 0
+          radius: 0
+          pad_all: 0
+          scrollable: false
+          on_click:
+            - script.stop: answer_timer
+            - lvgl.widget.hide: answer_popup
+          widgets:
+            - obj:
+                id: answer_box
+                align: CENTER
+                width: 600
+                height: 320
+                bg_color: 0x1A1F25
+                bg_opa: COVER
+                border_width: 4
+                border_color: 0x1E88E5
+                radius: 16
+                pad_all: 12
+                clickable: false
+                scrollable: false
+                widgets:
+                  - label:
+                      id: answer_icon
+                      align: TOP_MID
+                      y: 0
+                      text_font: mdi72
+                      text: " "
+                  - label:
+                      id: answer_title
+                      align: TOP_MID
+                      y: 84
+                      width: 560
+                      long_mode: DOT
+                      height: 24
+                      text_align: CENTER
+                      text_font: f20
+                      text_color: 0x90A4AE
+                      text: ""
+                  - label:
+                      id: answer_value
+                      align: TOP_MID
+                      y: 112
+                      width: 560
+                      long_mode: DOT
+                      height: 54
+                      text_align: CENTER
+                      text_font: f44b
+                      text_color: 0xECEFF1
+                      text: ""
+                  - label:
+                      id: answer_detail
+                      align: TOP_MID
+                      y: 172
+                      width: 560
+                      long_mode: DOT
+                      height: 24
+                      text_align: CENTER
+                      text_font: f20
+                      text_color: 0x90A4AE
+                      text: ""
+                  - label:
+                      align: BOTTOM_MID
+                      y: 0
+                      text_font: f14
+                      text_color: 0x607D8B
+                      text: "Tippen zum Schließen"
+
+      # ---------------- show_question: Ja/Nein-Dialog ----------------
+      - obj:
+          id: question_popup
+          x: 0
+          y: 0
+          width: 100%
+          height: 100%
+          hidden: true
+          bg_color: 0x000000
+          bg_opa: 70%
+          border_width: 0
+          radius: 0
+          pad_all: 0
+          scrollable: false
+          widgets:
+            - obj:
+                align: CENTER
+                width: 600
+                height: 320
+                bg_color: 0x1A1F25
+                bg_opa: COVER
+                border_width: 4
+                border_color: 0x1E88E5
+                radius: 16
+                pad_all: 12
+                scrollable: false
+                widgets:
+                  - label:
+                      id: question_icon
+                      align: TOP_MID
+                      y: 0
+                      text_font: mdi72
+                      text_color: 0x1E88E5
+                      text: " "
+                  - label:
+                      id: question_text
+                      align: TOP_MID
+                      y: 88
+                      width: 560
+                      long_mode: WRAP
+                      text_align: CENTER
+                      text_font: f26b
+                      text_color: 0xECEFF1
+                      text: ""
+                  - button:
+                      align: BOTTOM_LEFT
+                      width: 250
+                      height: 72
+                      bg_color: 0x43A047
+                      radius: 12
+                      on_click:
+                        - script.stop: question_timer
+                        - script.execute:
+                            id: send_question_answer
+                            answer: "yes"
+                      widgets:
+                        - label:
+                            align: CENTER
+                            text_font: f26b
+                            text_color: 0xFFFFFF
+                            text: "Ja"
+                  - button:
+                      align: BOTTOM_RIGHT
+                      width: 250
+                      height: 72
+                      bg_color: 0xE53935
+                      radius: 12
+                      on_click:
+                        - script.stop: question_timer
+                        - script.execute:
+                            id: send_question_answer
+                            answer: "no"
+                      widgets:
+                        - label:
+                            align: CENTER
+                            text_font: f26b
+                            text_color: 0xFFFFFF
+                            text: "Nein"
+
+      # ---------------- Abdunkel-Overlay (immer oberste Ebene) ----------------
+      - obj:
+          id: dim_overlay
+          x: 0
+          y: 0
+          width: 100%
+          height: 100%
+          bg_color: 0x000000
+          bg_opa: TRANSP
+          border_width: 0
+          radius: 0
+          pad_all: 0
+          clickable: false
+          scrollable: false
+
+  pages:
+    - id: page_wetter
+      bg_color: 0x000000
+      scrollable: false
+      widgets:
+        # =============== oben links: Außen ===============
+        - obj:
+            x: 8
+            y: 8
+            width: 256
+            height: 168
+            styles: panel
+            scrollable: false
+            clickable: false
+            widgets:
+              - label:
+                  x: 0
+                  y: 0
+                  text_font: f20
+                  text_color: 0x90A4AE
+                  text: "Außen"
+              - label:
+                  id: out_temp
+                  x: 0
+                  y: 24
+                  text_font: f64
+                  text_color: 0xECEFF1
+                  text: !lambda |-
+                    return id(fmt_num)(id(ws_aussen_temp).state, 1) + "°";
+              - label:
+                  id: out_maxmin
+                  x: 0
+                  y: 96
+                  text_font: f20
+                  text_color: 0x90A4AE
+                  text: !lambda |-
+                    return std::string("max ") + id(fmt_num)(id(ws_aussen_max).state, 1) + "°   min "
+                           + id(fmt_num)(id(ws_aussen_min).state, 1) + "°";
+              - label:
+                  x: 0
+                  y: 122
+                  text_font: mdi20
+                  text_color: 0x607D8B
+                  text: "\U000F058E"
+              - label:
+                  id: out_hum
+                  x: 26
+                  y: 122
+                  text_font: f20
+                  text_color: 0x90A4AE
+                  text: !lambda |-
+                    return id(fmt_num)(id(ws_aussen_feuchte).state, 0) + " %";
+
+        # =============== oben Mitte: Vorhersage heute ===============
+        - obj:
+            x: 272
+            y: 8
+            width: 256
+            height: 168
+            styles: panel
+            scrollable: false
+            clickable: false
+            widgets:
+              - label:
+                  x: 0
+                  y: 0
+                  text_font: f20
+                  text_color: 0x90A4AE
+                  text: "Heute"
+              - label:
+                  id: fc_icon
+                  x: 0
+                  y: 28
+                  text_font: mdi72
+                  text_color: 0xB0BEC5
+                  text: !lambda |-
+                    std::string s = id(ws_vh_symbol).state;
+                    if (!id(ws_vh_symbol).has_state() || s.empty()) return std::string(" ");
+                    return id(icon_glyph)(s);
+              # Text (bis 2 Zeilen) und Max/Min untereinander, Max/Min rutscht automatisch nach
+              - obj:
+                  x: 84
+                  y: 24
+                  width: 148
+                  height: 96
+                  styles: plain
+                  scrollable: false
+                  clickable: false
+                  layout:
+                    type: flex
+                    flex_flow: column
+                    pad_row: 2
+                  widgets:
+                    - label:
+                        id: fc_text
+                        width: 148
+                        long_mode: WRAP
+                        text_font: f26b
+                        text_color: 0xECEFF1
+                        text: !lambda |-
+                          std::string s = id(ws_vh_text).state;
+                          return (id(ws_vh_text).has_state() && !s.empty()) ? s : std::string("--");
+                    - label:
+                        id: fc_maxmin
+                        text_font: f20
+                        text_color: 0x90A4AE
+                        text: !lambda |-
+                          return id(fmt_num)(id(ws_vh_max).state, 0) + "° / "
+                                 + id(fmt_num)(id(ws_vh_min).state, 0) + "°";
+              - label:
+                  x: 0
+                  y: 122
+                  text_font: mdi20
+                  text_color: 0x607D8B
+                  text: "\U000F054B"
+              - label:
+                  id: fc_rain
+                  x: 26
+                  y: 122
+                  width: 206
+                  long_mode: DOT
+                  height: 24
+                  text_font: f20
+                  text_color: 0x90A4AE
+                  text: !lambda |-
+                    std::string s = id(ws_vh_regen).state;
+                    return (id(ws_vh_regen).has_state() && !s.empty()) ? s : std::string("--");
+
+        # =============== oben rechts: Innen (Wohnzimmer) ===============
+        - obj:
+            x: 536
+            y: 8
+            width: 256
+            height: 168
+            styles: panel
+            scrollable: false
+            clickable: false
+            widgets:
+              - label:
+                  x: 0
+                  y: 0
+                  text_font: f20
+                  text_color: 0x90A4AE
+                  text: "Innen"
+              - label:
+                  id: in_temp
+                  x: 0
+                  y: 24
+                  text_font: f64
+                  text_color: 0xECEFF1
+                  text: !lambda |-
+                    return id(fmt_num)(id(ws_innen_temp).state, 1) + "°";
+              - label:
+                  id: in_smiley
+                  align: TOP_RIGHT
+                  x: 0
+                  y: 30
+                  text_font: mdi48
+                  text: !lambda |-
+                    std::string k = id(ws_komfort).state;
+                    if (!id(ws_komfort).has_state() || k == "unbekannt" || k.empty())
+                      return std::string("\U000F01F2");
+                    if (k == "gut") return std::string("\U000F01F5");
+                    return std::string("\U000F01F6");
+                  text_color: 0x607D8B
+              - label:
+                  id: in_komfort
+                  x: 0
+                  y: 96
+                  text_font: f20
+                  text_color: 0x90A4AE
+                  text: !lambda |-
+                    std::string k = id(ws_komfort).state;
+                    if (k == "gut") return std::string("angenehm");
+                    if (k == "trocken") return std::string("zu trocken");
+                    if (k == "feucht") return std::string("zu feucht");
+                    if (k == "kalt") return std::string("zu kühl");
+                    if (k == "warm") return std::string("zu warm");
+                    return std::string("");
+              - label:
+                  x: 0
+                  y: 122
+                  text_font: mdi20
+                  text_color: 0x607D8B
+                  text: "\U000F058E"
+              - label:
+                  id: in_hum
+                  x: 26
+                  y: 122
+                  text_font: f20
+                  text_color: 0x90A4AE
+                  text: !lambda |-
+                    return id(fmt_num)(id(ws_innen_feuchte).state, 0) + " %";
+
+        # =============== Mitte: Uhr und Datum ===============
+        - label:
+            id: clock_label
+            align: TOP_MID
+            y: 176
+            text_font: f120
+            text_color: 0xECEFF1
+            text: !lambda |-
+              auto now = id(now_time)();
+              if (!now.is_valid()) return std::string("--:--");
+              return str_sprintf("%02d:%02d", now.hour, now.minute);
+        - label:
+            id: date_label
+            align: TOP_MID
+            y: 300
+            text_font: f26b
+            text_color: 0x90A4AE
+            text: !lambda |-
+              auto now = id(now_time)();
+              if (!now.is_valid()) return std::string("");
+              static const char *tage[] = {"Sonntag", "Montag", "Dienstag", "Mittwoch",
+                                           "Donnerstag", "Freitag", "Samstag"};
+              static const char *monate[] = {"Januar", "Februar", "März", "April", "Mai", "Juni",
+                                             "Juli", "August", "September", "Oktober",
+                                             "November", "Dezember"};
+              return str_sprintf("%s, %d. %s", tage[now.day_of_week - 1], now.day_of_month,
+                                 monate[now.month - 1]);
+
+        # =============== Überlagerung: Alarm über der Mitte ===============
+        - obj:
+            id: alarm_banner
+            x: 8
+            y: 184
+            width: 784
+            height: 148
+            hidden: true
+            bg_color: 0xB71C1C
+            bg_opa: COVER
+            border_width: 0
+            radius: 14
+            pad_all: 14
+            scrollable: false
+            on_click:
+              - script.execute: open_tiles_view
+            widgets:
+              - label:
+                  id: alarm_icon
+                  x: 0
+                  align: LEFT_MID
+                  text_font: mdi72
+                  text_color: 0xFFFFFF
+                  text: " "
+              - label:
+                  id: alarm_title
+                  x: 96
+                  y: 18
+                  width: 640
+                  long_mode: DOT
+                  height: 54
+                  text_font: f44b
+                  text_color: 0xFFFFFF
+                  text: ""
+              - label:
+                  id: alarm_detail
+                  x: 96
+                  y: 74
+                  width: 640
+                  long_mode: DOT
+                  height: 32
+                  text_font: f26b
+                  text_color: 0xFFCDD2
+                  text: ""
+
+        # =============== unten, Ruhezustand: Sonne ===============
+        - obj:
+            id: sun_panel
+            x: 8
+            y: 344
+            width: 784
+            height: 128
+            styles: panel
+            scrollable: false
+            clickable: false
+            widgets:
+              - label:
+                  x: 150
+                  y: 22
+                  text_font: mdi36
+                  text_color: 0xFFB74D
+                  text: "\U000F059C"
+              - label:
+                  id: sun_rise
+                  x: 200
+                  y: 14
+                  text_font: f44b
+                  text_color: 0xECEFF1
+                  text: !lambda |-
+                    std::string s = id(ws_sonnenaufgang).state;
+                    return (id(ws_sonnenaufgang).has_state() && !s.empty()) ? s : std::string("--:--");
+              - label:
+                  x: 150
+                  y: 74
+                  text_font: f14
+                  text_color: 0x607D8B
+                  text: "Sonnenaufgang"
+              - label:
+                  x: 450
+                  y: 22
+                  text_font: mdi36
+                  text_color: 0xFF8A65
+                  text: "\U000F059B"
+              - label:
+                  id: sun_set
+                  x: 500
+                  y: 14
+                  text_font: f44b
+                  text_color: 0xECEFF1
+                  text: !lambda |-
+                    std::string s = id(ws_sonnenuntergang).state;
+                    return (id(ws_sonnenuntergang).has_state() && !s.empty()) ? s : std::string("--:--");
+              - label:
+                  x: 450
+                  y: 74
+                  text_font: f14
+                  text_color: 0x607D8B
+                  text: "Sonnenuntergang"
+
+        # =============== unten, mit Kacheln: bis zu 4 kleine + "+n" ===============
+        - obj:
+            id: mini_0
+            x: 8
+            y: 344
+            width: 176
+            height: 128
+            hidden: true
+            styles: panel
+            border_width: 3
+            pad_all: 10
+            scrollable: false
+            pressed:
+              bg_color: 0x2A3038
+            on_click:
+              - script.execute: open_tiles_view
+            widgets:
+              # Icon und Titelbreite setzt set_tiles (Icon nur, wenn der Titel daneben passt)
+              - label:
+                  id: mini_0_icon
+                  x: 0
+                  y: 0
+                  text_font: mdi36
+                  text: " "
+              - label:
+                  id: mini_0_title
+                  x: 42
+                  y: 6
+                  width: 114
+                  long_mode: DOT
+                  height: 24
+                  text_font: f20
+                  text_color: 0x90A4AE
+                  text: ""
+              - label:
+                  id: mini_0_value
+                  x: 0
+                  y: 40
+                  width: 156
+                  long_mode: DOT
+                  height: 24
+                  text_font: f20b
+                  text_color: 0xECEFF1
+                  text: ""
+              # Detail: bis zu 2 Zeilen, danach "…"
+              - label:
+                  id: mini_0_detail
+                  x: 0
+                  y: 66
+                  width: 156
+                  height: 36
+                  long_mode: DOT
+                  text_font: f14
+                  text_color: 0x90A4AE
+                  text: ""
+              - bar:
+                  id: mini_0_bar
+                  x: 0
+                  y: 102
+                  width: 156
+                  height: 6
+                  min_value: 0
+                  max_value: 100
+                  value: 0
+                  hidden: true
+                  clickable: false
+                  bg_color: 0x37474F
+                  indicator:
+                    bg_color: 0x1E88E5
+        - obj:
+            id: mini_1
+            x: 192
+            y: 344
+            width: 176
+            height: 128
+            hidden: true
+            styles: panel
+            border_width: 3
+            pad_all: 10
+            scrollable: false
+            pressed:
+              bg_color: 0x2A3038
+            on_click:
+              - script.execute: open_tiles_view
+            widgets:
+              # Icon und Titelbreite setzt set_tiles (Icon nur, wenn der Titel daneben passt)
+              - label:
+                  id: mini_1_icon
+                  x: 0
+                  y: 0
+                  text_font: mdi36
+                  text: " "
+              - label:
+                  id: mini_1_title
+                  x: 42
+                  y: 6
+                  width: 114
+                  long_mode: DOT
+                  height: 24
+                  text_font: f20
+                  text_color: 0x90A4AE
+                  text: ""
+              - label:
+                  id: mini_1_value
+                  x: 0
+                  y: 40
+                  width: 156
+                  long_mode: DOT
+                  height: 24
+                  text_font: f20b
+                  text_color: 0xECEFF1
+                  text: ""
+              # Detail: bis zu 2 Zeilen, danach "…"
+              - label:
+                  id: mini_1_detail
+                  x: 0
+                  y: 66
+                  width: 156
+                  height: 36
+                  long_mode: DOT
+                  text_font: f14
+                  text_color: 0x90A4AE
+                  text: ""
+              - bar:
+                  id: mini_1_bar
+                  x: 0
+                  y: 102
+                  width: 156
+                  height: 6
+                  min_value: 0
+                  max_value: 100
+                  value: 0
+                  hidden: true
+                  clickable: false
+                  bg_color: 0x37474F
+                  indicator:
+                    bg_color: 0x1E88E5
+        - obj:
+            id: mini_2
+            x: 376
+            y: 344
+            width: 176
+            height: 128
+            hidden: true
+            styles: panel
+            border_width: 3
+            pad_all: 10
+            scrollable: false
+            pressed:
+              bg_color: 0x2A3038
+            on_click:
+              - script.execute: open_tiles_view
+            widgets:
+              # Icon und Titelbreite setzt set_tiles (Icon nur, wenn der Titel daneben passt)
+              - label:
+                  id: mini_2_icon
+                  x: 0
+                  y: 0
+                  text_font: mdi36
+                  text: " "
+              - label:
+                  id: mini_2_title
+                  x: 42
+                  y: 6
+                  width: 114
+                  long_mode: DOT
+                  height: 24
+                  text_font: f20
+                  text_color: 0x90A4AE
+                  text: ""
+              - label:
+                  id: mini_2_value
+                  x: 0
+                  y: 40
+                  width: 156
+                  long_mode: DOT
+                  height: 24
+                  text_font: f20b
+                  text_color: 0xECEFF1
+                  text: ""
+              # Detail: bis zu 2 Zeilen, danach "…"
+              - label:
+                  id: mini_2_detail
+                  x: 0
+                  y: 66
+                  width: 156
+                  height: 36
+                  long_mode: DOT
+                  text_font: f14
+                  text_color: 0x90A4AE
+                  text: ""
+              - bar:
+                  id: mini_2_bar
+                  x: 0
+                  y: 102
+                  width: 156
+                  height: 6
+                  min_value: 0
+                  max_value: 100
+                  value: 0
+                  hidden: true
+                  clickable: false
+                  bg_color: 0x37474F
+                  indicator:
+                    bg_color: 0x1E88E5
+        - obj:
+            id: mini_3
+            x: 560
+            y: 344
+            width: 176
+            height: 128
+            hidden: true
+            styles: panel
+            border_width: 3
+            pad_all: 10
+            scrollable: false
+            pressed:
+              bg_color: 0x2A3038
+            on_click:
+              - script.execute: open_tiles_view
+            widgets:
+              # Icon und Titelbreite setzt set_tiles (Icon nur, wenn der Titel daneben passt)
+              - label:
+                  id: mini_3_icon
+                  x: 0
+                  y: 0
+                  text_font: mdi36
+                  text: " "
+              - label:
+                  id: mini_3_title
+                  x: 42
+                  y: 6
+                  width: 114
+                  long_mode: DOT
+                  height: 24
+                  text_font: f20
+                  text_color: 0x90A4AE
+                  text: ""
+              - label:
+                  id: mini_3_value
+                  x: 0
+                  y: 40
+                  width: 156
+                  long_mode: DOT
+                  height: 24
+                  text_font: f20b
+                  text_color: 0xECEFF1
+                  text: ""
+              # Detail: bis zu 2 Zeilen, danach "…"
+              - label:
+                  id: mini_3_detail
+                  x: 0
+                  y: 66
+                  width: 156
+                  height: 36
+                  long_mode: DOT
+                  text_font: f14
+                  text_color: 0x90A4AE
+                  text: ""
+              - bar:
+                  id: mini_3_bar
+                  x: 0
+                  y: 102
+                  width: 156
+                  height: 6
+                  min_value: 0
+                  max_value: 100
+                  value: 0
+                  hidden: true
+                  clickable: false
+                  bg_color: 0x37474F
+                  indicator:
+                    bg_color: 0x1E88E5
+        - obj:
+            id: mini_more
+            x: 744
+            y: 344
+            width: 48
+            height: 128
+            hidden: true
+            styles: panel
+            pad_all: 0
+            scrollable: false
+            pressed:
+              bg_color: 0x2A3038
+            on_click:
+              - script.execute: open_tiles_view
+            widgets:
+              - label:
+                  id: mini_more_label
+                  align: CENTER
+                  text_font: f26b
+                  text_color: 0xECEFF1
+                  text: "+0"

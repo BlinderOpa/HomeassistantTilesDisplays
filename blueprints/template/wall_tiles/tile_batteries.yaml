@@ -1,0 +1,56 @@
+blueprint:
+  name: "Wall tiles: low batteries"
+  description: >
+    Collects ALL sensors with device_class "battery" below a limit (no list to maintain).
+    One device → its level, several → "3 Geräte" and the names in the detail line.
+  domain: template
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/template/wall_tiles/tile_batteries.yaml
+  input:
+    limit:
+      name: Limit (%)
+      default: 10
+      selector: {number: {min: 1, max: 50, unit_of_measurement: "%"}}
+    exclude:
+      name: Exclude (home battery, phones …)
+      default: []
+      selector: {entity: {domain: sensor, multiple: true}}
+    prio:
+      name: Priority
+      default: 15
+      selector: {number: {min: 0, max: 99}}
+
+variables:
+  limit_: !input limit
+  exclude_: !input exclude
+  prio_: !input prio
+
+sensor:
+  icon: mdi:battery-alert
+  state: >
+    {{ 'warn' if states.sensor
+       | selectattr('attributes.device_class', 'defined')
+       | selectattr('attributes.device_class', 'eq', 'battery')
+       | rejectattr('entity_id', 'in', exclude_)
+       | map(attribute='state') | select('is_number') | map('float')
+       | select('lt', limit_ | float) | list | count > 0 else 'hidden' }}
+  attributes:
+    prio: "{{ prio_ | int }}"
+    title: "Batterie leer"
+    value: >
+      {% set ns = namespace(l=[]) %}
+      {% for s in states.sensor | selectattr('attributes.device_class', 'defined')
+           | selectattr('attributes.device_class', 'eq', 'battery')
+           if s.entity_id not in exclude_ and s.state | is_number and s.state | float < limit_ | float %}
+        {% set ns.l = ns.l + [s.state | float | round(0) | int] %}
+      {% endfor %}
+      {{ (ns.l[0] ~ ' %') if ns.l | count == 1 else (ns.l | count) ~ ' Geräte' }}
+    detail: >
+      {% set ns = namespace(l=[]) %}
+      {% for s in states.sensor | selectattr('attributes.device_class', 'defined')
+           | selectattr('attributes.device_class', 'eq', 'battery')
+           if s.entity_id not in exclude_ and s.state | is_number and s.state | float < limit_ | float %}
+        {% set ns.l = ns.l + [s.name | replace(' Batterie', '') | replace(' Battery', '') | trim] %}
+      {% endfor %}
+      {{ ns.l | join(', ') }}
+    progress: -1
+    tap: "none"

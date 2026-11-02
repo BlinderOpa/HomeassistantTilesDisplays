@@ -1,0 +1,71 @@
+blueprint:
+  name: "Wall tiles voice: is my train on time?"
+  description: >
+    Voice command for the next train. Needs sensor.train_next from the template blueprint
+    "next train" (state = delay in minutes, attributes departure_plan, departure_real,
+    platform, cancelled).
+  domain: automation
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/automation/wall_tiles/voice_train.yaml
+  input:
+    sentences:
+      name: Sentences
+      default:
+        - "Zug"
+        - "Zugverspätung"
+        - "Hat der Zug Verspätung"
+        - "(Ist | Kommt) der Zug pünktlich"
+      selector:
+        text:
+          multiple: true
+    train_entity:
+      name: Train sensor
+      default: sensor.train_next
+      selector:
+        entity:
+          domain: sensor
+
+mode: parallel
+
+triggers:
+  - trigger: conversation
+    command: !input sentences
+
+variables:
+  e: !input train_entity
+  v: "{{ states(e) }}"
+  has_data: "{{ v | is_number }}"
+  minutes: "{{ v | int(0) }}"
+  plan: "{{ state_attr(e, 'departure_plan') or '' }}"
+  real: "{{ state_attr(e, 'departure_real') or '' }}"
+  platform: "{{ state_attr(e, 'platform') or '' }}"
+  result: >
+    {% if not has_data %}none
+    {% elif state_attr(e, 'cancelled') %}cancelled
+    {% elif minutes >= 6 %}late
+    {% elif minutes >= 1 %}slightly
+    {% else %}ontime{% endif %}
+
+actions:
+  - action: script.display_answer
+    continue_on_error: true
+    data:
+      target: "{{ trigger.device_id }}"
+      title: "Zug {{ plan }}"
+      status: >
+        {{ {'none': 'info', 'cancelled': 'alarm', 'ontime': 'ok', 'slightly': 'ok',
+            'late': ('alarm' if minutes >= 15 else 'warn')}[result] }}
+      icon: "{{ {'none': 'help', 'cancelled': 'close', 'ontime': 'check', 'slightly': 'check', 'late': 'train'}[result] }}"
+      value: >
+        {{ {'none': 'keine Daten', 'cancelled': 'fällt aus', 'ontime': 'pünktlich',
+            'slightly': '+' ~ minutes ~ ' min', 'late': '+' ~ minutes ~ ' min'}[result] }}
+      detail: >
+        {% set t = [] %}
+        {% if result in ['slightly', 'late'] %}{% set t = t + ['ab ' ~ real] %}{% endif %}
+        {% if platform %}{% set t = t + ['Gleis ' ~ platform] %}{% endif %}
+        {{ t | join(' · ') }}
+  - set_conversation_response: >
+      {% if result == 'none' %}Ich habe gerade keine Zugdaten.
+      {% elif result == 'cancelled' %}Der Zug um {{ plan }} Uhr fällt aus.
+      {% elif result == 'ontime' %}Der Zug um {{ plan }} Uhr ist pünktlich.
+      {% elif result == 'slightly' %}Der Zug um {{ plan }} Uhr ist fast pünktlich und fährt um {{ real }} Uhr.
+      {% else %}Der Zug um {{ plan }} Uhr hat {{ minutes }} {{ 'Minute' if minutes == 1 else 'Minuten' }} Verspätung und fährt um {{ real }} Uhr.{% endif %}

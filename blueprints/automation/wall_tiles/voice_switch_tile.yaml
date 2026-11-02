@@ -1,0 +1,75 @@
+blueprint:
+  name: "Wall tiles voice: switch a tile on / off"
+  description: >
+    Switch the entity behind a toggle tile by voice, with an explicit on and off
+    (no toggling by voice): "E-Bike laden" / "E-Bike aus". The switch is read from the
+    tile attribute "entity", so it is only defined once – in the tile.
+  domain: automation
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/automation/wall_tiles/voice_switch_tile.yaml
+  input:
+    sentences_on:
+      name: Sentences – on
+      default:
+        - "(E-Bike | Fahrrad) [Steckdose] (an | einschalten)"
+        - "(E-Bike | Fahrrad) laden"
+      selector: {text: {multiple: true}}
+    sentences_off:
+      name: Sentences – off
+      default:
+        - "(E-Bike | Fahrrad) [Steckdose] (aus | ausschalten)"
+      selector: {text: {multiple: true}}
+    tile_entity:
+      name: Toggle tile (sensor.tile_…)
+      selector: {entity: {domain: sensor}}
+    name:
+      name: Name (display and voice)
+      default: "E-Bike"
+      selector: {text: {}}
+    icon:
+      name: Icon (MDI name without mdi:)
+      default: "power-plug"
+      selector: {text: {}}
+
+mode: parallel
+
+triggers:
+  - trigger: conversation
+    id: "on"
+    command: !input sentences_on
+  - trigger: conversation
+    id: "off"
+    command: !input sentences_off
+
+variables:
+  tile: !input tile_entity
+  name_: !input name
+  icon_: !input icon
+  on_: "{{ trigger.id == 'on' }}"
+  ent: "{{ state_attr(tile, 'entity') or '' }}"
+
+actions:
+  - if: "{{ ent == '' or states(ent) in ['unknown', 'unavailable'] }}"
+    then:
+      - action: script.display_answer
+        continue_on_error: true
+        data:
+          target: "{{ trigger.device_id }}"
+          title: "{{ name_ }}"
+          value: "nicht erreichbar"
+          status: warn
+          icon: alert
+      - set_conversation_response: "{{ name_ }} ist gerade nicht erreichbar."
+      - stop: "not reachable"
+  - action: "{{ 'homeassistant.turn_on' if on_ else 'homeassistant.turn_off' }}"
+    target:
+      entity_id: "{{ ent }}"
+  - action: script.display_answer
+    continue_on_error: true
+    data:
+      target: "{{ trigger.device_id }}"
+      title: "{{ name_ }}"
+      value: "{{ 'an' if on_ else 'aus' }}"
+      status: "{{ 'on' if on_ else 'off' }}"
+      icon: "{{ icon_ }}"
+      duration: 4
+  - set_conversation_response: "{{ name_ }} ist {{ 'eingeschaltet' if on_ else 'ausgeschaltet' }}."

@@ -1,0 +1,94 @@
+blueprint:
+  name: "Wall tiles: bad air quality"
+  description: >
+    Finds ALL CO₂ (ppm) and PM2.5 sensors and warns when one is above its limit.
+    A new air sensor shows up by itself once it is set up and assigned to an area.
+  domain: template
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/template/wall_tiles/tile_air_quality.yaml
+  input:
+    co2_limit:
+      name: CO₂ limit (ppm)
+      default: 1000
+      selector: {number: {min: 600, max: 3000, step: 50, unit_of_measurement: ppm}}
+    pm25_limit:
+      name: PM2.5 limit (µg/m³)
+      default: 25
+      selector: {number: {min: 5, max: 200}}
+    exclude:
+      name: Exclude sensors (outdoor, fridge, sauna …)
+      default: []
+      selector: {entity: {domain: sensor, multiple: true}}
+    prio:
+      name: Priority
+      default: 18
+      selector: {number: {min: 0, max: 99}}
+
+variables:
+  co2_l: !input co2_limit
+  pm_l: !input pm25_limit
+  excl: !input exclude
+  prio_: !input prio
+
+sensor:
+  icon: mdi:molecule-co2
+  state: >
+      {% set ns = namespace(l=[]) %}
+      {% for s in states.sensor | selectattr('attributes.device_class', 'defined')
+            | selectattr('attributes.device_class', 'in', ['carbon_dioxide', 'pm25'])
+            if s.entity_id not in excl and s.state | is_number
+               and ((s.attributes.device_class == 'carbon_dioxide' and s.attributes.get('unit_of_measurement') == 'ppm' and s.state | float >= co2_l | float)
+                    or (s.attributes.device_class == 'pm25' and s.state | float >= pm_l | float)) %}
+        {% set co2 = s.attributes.device_class == 'carbon_dioxide' %}
+        {% set ns.l = ns.l + [{'room': area_name(s.entity_id) or s.name,
+                               'value': ('CO₂ ' ~ (s.state | float | int) ~ ' ppm') if co2 else ('Feinstaub ' ~ (s.state | float | int) ~ ' µg'),
+                               'co2': co2}] %}
+      {% endfor %}
+      {% set l = ns.l | sort(attribute='co2', reverse=true) %}
+      {{ 'warn' if l else 'hidden' }}
+  attributes:
+    list: >
+      {% set ns = namespace(l=[]) %}
+      {% for s in states.sensor | selectattr('attributes.device_class', 'defined')
+            | selectattr('attributes.device_class', 'in', ['carbon_dioxide', 'pm25'])
+            if s.entity_id not in excl and s.state | is_number
+               and ((s.attributes.device_class == 'carbon_dioxide' and s.attributes.get('unit_of_measurement') == 'ppm' and s.state | float >= co2_l | float)
+                    or (s.attributes.device_class == 'pm25' and s.state | float >= pm_l | float)) %}
+        {% set co2 = s.attributes.device_class == 'carbon_dioxide' %}
+        {% set ns.l = ns.l + [{'room': area_name(s.entity_id) or s.name,
+                               'value': ('CO₂ ' ~ (s.state | float | int) ~ ' ppm') if co2 else ('Feinstaub ' ~ (s.state | float | int) ~ ' µg'),
+                               'co2': co2}] %}
+      {% endfor %}
+      {% set l = ns.l | sort(attribute='co2', reverse=true) %}
+      {{ l }}
+    value: >
+      {% set ns = namespace(l=[]) %}
+      {% for s in states.sensor | selectattr('attributes.device_class', 'defined')
+            | selectattr('attributes.device_class', 'in', ['carbon_dioxide', 'pm25'])
+            if s.entity_id not in excl and s.state | is_number
+               and ((s.attributes.device_class == 'carbon_dioxide' and s.attributes.get('unit_of_measurement') == 'ppm' and s.state | float >= co2_l | float)
+                    or (s.attributes.device_class == 'pm25' and s.state | float >= pm_l | float)) %}
+        {% set co2 = s.attributes.device_class == 'carbon_dioxide' %}
+        {% set ns.l = ns.l + [{'room': area_name(s.entity_id) or s.name,
+                               'value': ('CO₂ ' ~ (s.state | float | int) ~ ' ppm') if co2 else ('Feinstaub ' ~ (s.state | float | int) ~ ' µg'),
+                               'co2': co2}] %}
+      {% endfor %}
+      {% set l = ns.l | sort(attribute='co2', reverse=true) %}
+      {{ l[0].value if l else '' }}
+    detail: >
+      {% set ns = namespace(l=[]) %}
+      {% for s in states.sensor | selectattr('attributes.device_class', 'defined')
+            | selectattr('attributes.device_class', 'in', ['carbon_dioxide', 'pm25'])
+            if s.entity_id not in excl and s.state | is_number
+               and ((s.attributes.device_class == 'carbon_dioxide' and s.attributes.get('unit_of_measurement') == 'ppm' and s.state | float >= co2_l | float)
+                    or (s.attributes.device_class == 'pm25' and s.state | float >= pm_l | float)) %}
+        {% set co2 = s.attributes.device_class == 'carbon_dioxide' %}
+        {% set ns.l = ns.l + [{'room': area_name(s.entity_id) or s.name,
+                               'value': ('CO₂ ' ~ (s.state | float | int) ~ ' ppm') if co2 else ('Feinstaub ' ~ (s.state | float | int) ~ ' µg'),
+                               'co2': co2}] %}
+      {% endfor %}
+      {% set l = ns.l | sort(attribute='co2', reverse=true) %}
+      {{ (l | map(attribute='room') | unique | join(', ')) ~ ' · lüften' if l else '' }}
+    prio: "{{ prio_ | int }}"
+    title: "Luft schlecht"
+    progress: -1
+    tap: "none"

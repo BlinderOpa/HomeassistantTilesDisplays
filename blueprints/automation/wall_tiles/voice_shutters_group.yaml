@@ -1,0 +1,68 @@
+blueprint:
+  name: "Wall tiles voice: shutter group up / down"
+  description: >
+    "Untere Rollos runter" / "hoch" – runs the scripts behind the two tiles
+    "shutters still open / still closed" (read from their attribute "action"), independent of
+    whether the tiles are visible. Answers with how many shutters move.
+  domain: automation
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/automation/wall_tiles/voice_shutters_group.yaml
+  input:
+    sentences_down:
+      name: Sentences – down
+      default: ["[Alle] (Rollos unten | untere Rollos) runter", "Abendrollos runter"]
+      selector: {text: {multiple: true}}
+    sentences_up:
+      name: Sentences – up
+      default: ["[Alle] (Rollos unten | untere Rollos) hoch", "Morgenrollos hoch"]
+      selector: {text: {multiple: true}}
+    tile_close:
+      name: Tile "Rollos runter?" (mode close)
+      selector: {entity: {domain: sensor}}
+    tile_open:
+      name: Tile "Rollos hoch?" (mode open)
+      selector: {entity: {domain: sensor}}
+    title:
+      name: Display title
+      default: "Rollos"
+      selector: {text: {}}
+
+mode: parallel
+
+triggers:
+  - trigger: conversation
+    id: down
+    command: !input sentences_down
+  - trigger: conversation
+    id: up
+    command: !input sentences_up
+
+variables:
+  t_close: !input tile_close
+  t_open: !input tile_open
+  title_: !input title
+  down: "{{ trigger.id == 'down' }}"
+  act: "{{ state_attr(t_close if down else t_open, 'action') or '' }}"
+
+actions:
+  - if: "{{ act == '' }}"
+    then:
+      - set_conversation_response: "Das Rollo-Skript ist nicht erreichbar."
+      - stop: "action missing in tile"
+  - action: "{{ act }}"
+    response_variable: res
+  - variables:
+      n: "{{ res.moved | int(0) if res is mapping else 0 }}"
+      partial: "{{ res.partial | default(false) if res is mapping else false }}"
+  - action: script.display_answer
+    continue_on_error: true
+    data:
+      target: "{{ trigger.device_id }}"
+      title: "{{ title_ }}"
+      value: "{{ ('schon unten' if down else 'schon oben') if n == 0 else ('runter' if down else 'hoch') }}"
+      detail: "{{ 'eins nur teilweise' if partial else '' }}"
+      status: "{{ 'ok' if n == 0 else 'info' }}"
+      icon: "{{ 'window-shutter' if down else 'window-shutter-open' }}"
+      duration: 4
+  - set_conversation_response: >
+      {% if n == 0 %}Die Rollos sind schon {{ 'unten' if down else 'oben' }}.
+      {% else %}{{ 'Ein Rollo fährt' if n == 1 else n ~ ' Rollos fahren' }} {{ 'runter' if down else 'hoch' }}.{% endif %}

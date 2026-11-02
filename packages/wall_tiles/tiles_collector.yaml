@@ -1,0 +1,76 @@
+# Tile collector
+#   Collects every tile (entity id starts with sensor.tile_ AND has the label "Display"),
+#   drops hidden ones, sorts by prio and exposes the first 12 in the attribute "tiles".
+#   Sending to the devices is done by the blueprint "Wall tiles: push tiles to an ESPHome device"
+#   (one automation per device).
+#
+# DEBUG: switch on input_boolean.wall_tiles_debug →
+#   all sensor.tile_* are sent, also hidden ones and ones without the label.
+#   Hidden tiles are sent grey (status "off"); detail starts with "[aus]" / "[ohne Label]".
+#   Debug switches itself off after 15 minutes.
+#
+# Nothing to adapt here.
+input_boolean:
+  wall_tiles_debug:
+    name: "Wall tiles debug"
+    icon: mdi:bug
+
+template:
+  - sensor:
+      - name: "Wall tiles"
+        unique_id: wall_tiles
+        icon: mdi:view-grid
+        state: >
+          {% set _minute = now().minute %}
+          {% if is_state('input_boolean.wall_tiles_debug', 'on') %}
+            {{ [states.sensor | map(attribute='entity_id') | select('match', 'sensor.tile_') | list | count, 12] | min }}
+          {% else %}
+            {{ [label_entities('Display')
+                | select('match', 'sensor.tile_')
+                | map('states')
+                | reject('in', ['hidden', 'unknown', 'unavailable'])
+                | list | count, 12] | min }}
+          {% endif %}
+        attributes:
+          tiles: >
+            {% set _minute = now().minute %}
+            {% set debug = is_state('input_boolean.wall_tiles_debug', 'on') %}
+            {% set labelled = label_entities('Display') | select('match', 'sensor.tile_') | list %}
+            {% set candidates = (states.sensor | map(attribute='entity_id')
+                                 | select('match', 'sensor.tile_') | list)
+                                if debug else labelled %}
+            {% set ns = namespace(t=[]) %}
+            {% for e in candidates %}
+              {% set s = states(e) %}
+              {% set hidden = s in ['hidden', 'unknown', 'unavailable'] %}
+              {% if debug or not hidden %}
+                {% set a = states[e].attributes %}
+                {% set hint = ('[aus] ' if hidden else '') ~ ('[ohne Label] ' if e not in labelled else '') %}
+                {% set ns.t = ns.t + [{
+                  'id':        e[12:],
+                  'status':    'off' if hidden else s,
+                  'icon':      (a.get('icon') or 'mdi:information') | replace('mdi:', ''),
+                  'title':     (a.get('title') or '') | string | truncate(16, true, ''),
+                  'value':     (a.get('value') or '') | string | truncate(20, true, ''),
+                  'detail':    (hint ~ (a.get('detail') or '') | string) | truncate(40, true, ''),
+                  'prio':      a.get('prio', 99) | int(99),
+                  'tap':       a.get('tap') or 'none',
+                  'progress':  a.get('progress', -1) | int(-1),
+                  'mini_icon': a.get('mini_icon') or 'auto'
+                }] %}
+              {% endif %}
+            {% endfor %}
+            {{ (ns.t | sort(attribute='prio'))[:12] }}
+
+automation:
+  - id: wall_tiles_debug_off
+    alias: "Wall tiles: debug off after 15 min"
+    triggers:
+      - trigger: state
+        entity_id: input_boolean.wall_tiles_debug
+        to: "on"
+        for: "00:15:00"
+    actions:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.wall_tiles_debug

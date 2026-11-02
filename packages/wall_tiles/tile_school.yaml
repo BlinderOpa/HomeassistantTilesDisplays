@@ -1,0 +1,133 @@
+# Tiles: school – cancelled lessons (HACS integration "WebUntis", one integration per child)
+#   sensor.school_changes   – helper: children with cancellations on the queried school day
+#                             state = number of children, attribute list = [{name, when, text, subjects, until}]
+#   sensor.tile_school_1 / sensor.tile_school_2 – one tile per child
+#
+# Source: the WebUntis calendars (calendar.*), read with calendar.get_events.
+#   In the integration options "Calendar – cancelled lessons" must be ON.
+#   Cancelled lessons are then called "Cancelled: <subject>".
+#
+# Queried: daily 6:00–8:00 every 15 min → today
+#          18:00                       → next school day (first day with lessons in the next 4 days)
+#          and after HA start / "reload YAML" (mornings: today, otherwise next school day)
+# A tile stays visible until the last cancelled lesson is over (attribute "until").
+#
+# ── ADAPT ──────────────────────────────────────────────────────────────
+#   CHILDREN  list of [display name, calendar entity] – appears TWICE (entity_id list + "children")
+#   One tile per child: copy a tile block and change the name (3×).
+template:
+  - triggers:
+      - trigger: time
+        at: ["06:00:00", "06:15:00", "06:30:00", "06:45:00", "07:00:00",
+             "07:15:00", "07:30:00", "07:45:00", "08:00:00", "18:00:00"]
+      - trigger: homeassistant
+        event: start
+      - trigger: event
+        event_type: event_template_reloaded
+    actions:
+      - variables:
+          morning: "{{ now().hour < 12 }}"
+          from_: "{{ (today_at() if morning else today_at() + timedelta(days=1)).isoformat() }}"
+          to_: "{{ (today_at() + timedelta(days=1 if morning else 5)).isoformat() }}"
+      - action: calendar.get_events
+        target:
+          entity_id:
+            - calendar.webuntis_child_1
+            - calendar.webuntis_child_2
+        data:
+          start_date_time: "{{ from_ }}"
+          end_date_time: "{{ to_ }}"
+        response_variable: cal
+      - variables:
+          result: >
+            {% set children = [
+              ['Kind 1', 'calendar.webuntis_child_1'],
+              ['Kind 2', 'calendar.webuntis_child_2']
+            ] %}
+            {% set days = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'] %}
+            {% set ns = namespace(l=[]) %}
+            {% for name, c in children %}
+              {% set ev = ((cal[c].events if c in cal else []) | sort(attribute='start')) | list %}
+              {% if ev %}
+                {% set day = ev[0].start[:10] %}
+                {% set ls = ev | selectattr('start', 'match', day) | list %}
+                {% set off = ls | selectattr('summary', 'match', 'Cancelled: ') | list %}
+                {% set on = ls | rejectattr('summary', 'match', 'Cancelled: ') | list %}
+                {% if off %}
+                  {% set subjects = off | map(attribute='summary') | map('replace', 'Cancelled: ', '') | unique | list %}
+                  {% if not on %}
+                    {% set text = 'schulfrei' %}
+                  {% else %}
+                    {% set end_plan = ls | map(attribute='end') | max %}
+                    {% set end_real = on | map(attribute='end') | max %}
+                    {% set start = as_datetime(on[0].start).strftime('%H:%M') %}
+                    {% set end = as_datetime(end_real).strftime('%H:%M') %}
+                    {% set later = on[0].start != ls[0].start %}
+                    {% set earlier = end_real != end_plan %}
+                    {% if later and earlier %}{% set text = start ~ '–' ~ end %}
+                    {% elif later %}{% set text = 'ab ' ~ start %}
+                    {% elif earlier %}{% set text = 'bis ' ~ end %}
+                    {% elif subjects | count == 1 and subjects[0] | length <= 10 %}{% set text = subjects[0] ~ ' frei' %}
+                    {% elif off | count == 1 %}{% set text = '1 Std. frei' %}
+                    {% else %}{% set text = (off | count) ~ ' Std. frei' %}{% endif %}
+                  {% endif %}
+                  {% set diff = (as_datetime(ls[0].start).date() - now().date()).days %}
+                  {% set ns.l = ns.l + [{
+                      'name': name,
+                      'when': 'heute' if diff == 0 else ('morgen' if diff == 1 else days[as_datetime(ls[0].start).weekday()]),
+                      'text': text,
+                      'subjects': subjects | join(', '),
+                      'until': as_datetime(off | map(attribute='end') | max).isoformat() }] %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.l }}
+    sensor:
+      - name: "School Changes"
+        unique_id: school_changes
+        icon: mdi:school
+        state: "{{ result | count }}"
+        attributes:
+          list: "{{ result }}"
+
+  # ================= one tile per child =================
+  - sensor:
+      - name: "Tile School 1"
+        unique_id: tile_school_1
+        icon: mdi:calendar
+        state: >
+          {% set l = (state_attr('sensor.school_changes', 'list') or []) | selectattr('name', 'eq', 'Kind 1') | selectattr('until', 'gt', now().isoformat()) | list %}
+          {{ 'info' if l else 'hidden' }}
+        attributes:
+          prio: 21
+          title: >
+            {% set l = (state_attr('sensor.school_changes', 'list') or []) | selectattr('name', 'eq', 'Kind 1') | selectattr('until', 'gt', now().isoformat()) | list %}
+            {% if l %}{% set w = l[0].when %}{{ l[0].name }} {{ w if w in ['heute', 'morgen'] else w[:2] ~ '.' }}{% endif %}
+          value: >
+            {% set l = (state_attr('sensor.school_changes', 'list') or []) | selectattr('name', 'eq', 'Kind 1') | selectattr('until', 'gt', now().isoformat()) | list %}
+            {{ l[0].text if l else '' }}
+          detail: >
+            {% set l = (state_attr('sensor.school_changes', 'list') or []) | selectattr('name', 'eq', 'Kind 1') | selectattr('until', 'gt', now().isoformat()) | list %}
+            {{ l[0].subjects if l else '' }}
+          progress: -1
+          tap: "none"
+
+      - name: "Tile School 2"
+        unique_id: tile_school_2
+        icon: mdi:calendar
+        state: >
+          {% set l = (state_attr('sensor.school_changes', 'list') or []) | selectattr('name', 'eq', 'Kind 2') | selectattr('until', 'gt', now().isoformat()) | list %}
+          {{ 'info' if l else 'hidden' }}
+        attributes:
+          prio: 21
+          title: >
+            {% set l = (state_attr('sensor.school_changes', 'list') or []) | selectattr('name', 'eq', 'Kind 2') | selectattr('until', 'gt', now().isoformat()) | list %}
+            {% if l %}{% set w = l[0].when %}{{ l[0].name }} {{ w if w in ['heute', 'morgen'] else w[:2] ~ '.' }}{% endif %}
+          value: >
+            {% set l = (state_attr('sensor.school_changes', 'list') or []) | selectattr('name', 'eq', 'Kind 2') | selectattr('until', 'gt', now().isoformat()) | list %}
+            {{ l[0].text if l else '' }}
+          detail: >
+            {% set l = (state_attr('sensor.school_changes', 'list') or []) | selectattr('name', 'eq', 'Kind 2') | selectattr('until', 'gt', now().isoformat()) | list %}
+            {{ l[0].subjects if l else '' }}
+          progress: -1
+          tap: "none"

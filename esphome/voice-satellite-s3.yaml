@@ -1,0 +1,1041 @@
+# Part of ha-wall-tiles – https://github.com/BlinderOpa/HomeassistantTilesDisplays (MIT)
+# Secrets: copy esphome/secrets.example.yaml to secrets.yaml and fill it in.
+# Comments in this file are German (original project language).
+# Sprachsatellit S3 - Waveshare ESP32-S3-LCD-0.85
+# Pins gegen den Waveshare-Schaltplan geprüft.
+#
+# Implementiert "Schnittstelle Home Assistant ↔ Displays" v1.4:
+#   - Aktion show_answer      (Vollbild: Icon in Statusfarbe + value bis 8 Zeichen)
+#   - Aktion show_question    (Ja = PLUS-Taste, Nein = MINUS-Taste)
+#   - Aktion cancel_question
+#   - Event esphome.display_question_answer  (yes | no | timeout | cancelled)
+#   - Event esphome.display_ready   (beim Verbinden mit Home Assistant)
+#   Icons: Basis-Set v1 und aus v1.3 die Wetter-Icons (für Sprachantworten
+#   zum Wetter, wie beim C6). Die übrigen v1.3-Icons (Rollo, 3D-Drucker,
+#   Wärmepumpe, Lüftung) sind Kachel-Icons und fehlen hier; unbekanntes
+#   Icon wird zu "information".
+#   Nicht für den S3 vorgesehen: set_tiles, display_tap, Wetter-Grundansicht.
+# Die alte Aktion show_response ist entfallen (ersetzt durch show_answer).
+#
+# Weitere Funktionen:
+#   - Display-Helligkeit per PWM, in Home Assistant als Licht "Display Helligkeit"
+#   - Schriftgröße unter substitutions einstellbar
+#   - "Okay Nabu" erscheint erst, wenn Home Assistant verbunden ist
+#   - Lange Sprechtexte laufen im Antwortfeld langsam durch
+#   - OTA: Updates per WLAN aus dem ESPHome-Builder, Fortschritt auf dem Display
+#
+# In Home Assistant muss beim Gerät "Gerät darf Home-Assistant-Aktionen
+# ausführen" aktiviert sein, sonst kommen die Events nicht an.
+#
+# Hinweis: nicht gegen ESPHome 2026.10 kompiliert; bei Fehlermeldungen
+# zu einzelnen Optionen die ESPHome-Doku der jeweiligen Komponente prüfen.
+
+substitutions:
+  # Override these in your own device file (see esphome/examples/), so the
+  # device keeps its existing name and entity ids in Home Assistant.
+  node_name: voice-satellite-s3
+  friendly_name: ${friendly_name}
+  # Every device should have its own key. Default: secret "api_encryption_key".
+  api_key: !secret api_encryption_key
+  # Schriftgröße für Status- und Sprechtext
+  schrift_groesse: "16"
+  # Standarddauer für show_answer (duration: 0), laut Schnittstelle 8 s
+  antwort_standard_s: "8"
+  # Standard-Timeout für show_question, wenn timeout <= 0 gesendet wird
+  frage_standard_s: "30"
+
+esphome:
+  name: ${node_name}
+  friendly_name: "Voice Satellite S3"
+  on_boot:
+    # Wake-Word-Erkennung erst starten, wenn alles andere läuft
+    - priority: -100
+      then:
+        - micro_wake_word.start:
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  framework:
+    type: esp-idf
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  on_connect:
+    # WLAN steht, Home Assistant fehlt noch
+    - lambda: 'id(status_text) = "Verbinde HA...";'
+    - lvgl.widget.refresh: status_label
+  on_disconnect:
+    - lambda: 'id(status_text) = "Kein WLAN";'
+    - lvgl.widget.refresh: status_label
+
+# ---------------------------------------------------------------
+# OTA-Update per WLAN
+# ---------------------------------------------------------------
+# Verschlüsselt mit dem Schlüssel aus api: encryption: (ab ESPHome 2026.9),
+# daher kein OTA-Passwort nötig.
+# Während des Updates werden Wake Word und Sprachassistent angehalten,
+# damit Mikrofon und Lautsprecher nicht dazwischenfunken.
+ota:
+  - platform: esphome
+    id: ota_esphome
+    encryption:
+    on_begin:
+      - lambda: |-
+          id(ota_running) = true;
+          id(status_text) = "Update 0 %";
+      - voice_assistant.stop:
+      - micro_wake_word.stop:
+      - script.execute: answer_hide
+      - script.execute:
+          id: question_finish
+          antwort: "cancelled"
+      - light.turn_on:
+          id: status_leds
+          red: 100%
+          green: 60%
+          blue: 0%
+          brightness: 40%
+          transition_length: 0s
+      - lvgl.widget.refresh: status_label
+    on_progress:
+      # nur in 5-%-Schritten neu zeichnen
+      - if:
+          condition:
+            lambda: |-
+              static int letzte = -1;
+              int p = (int) x;
+              if (p / 5 == letzte) return false;
+              letzte = p / 5;
+              char buf[20];
+              snprintf(buf, sizeof(buf), "Update %d %%", p);
+              id(status_text) = buf;
+              return true;
+          then:
+            - lvgl.widget.refresh: status_label
+    on_end:
+      - lambda: 'id(status_text) = "Neustart...";'
+      - lvgl.widget.refresh: status_label
+    on_error:
+      - lambda: |-
+          id(ota_running) = false;
+          id(status_text) = "Update Fehler";
+      - lvgl.widget.refresh: status_label
+      - script.execute: led_error
+      - delay: 5s
+      - lambda: 'id(status_text) = id(ha_connected) ? "Bereit" : "Verbinde HA...";'
+      - lvgl.widget.refresh: status_label
+
+# ---------------------------------------------------------------
+# Schnittstelle zu Home Assistant (Schnittstelle_Displays.md v1.4)
+# ---------------------------------------------------------------
+api:
+  encryption:
+    key: ${api_key}
+  actions:
+    # Abschnitt 2: esphome.voice_satellite_s3_show_answer
+    - action: show_answer
+      variables:
+        title: string
+        value: string
+        detail: string
+        status: string
+        icon: string
+        duration: int
+      then:
+        - lambda: |-
+            // title und detail zeigt der S3 nicht an (zu klein)
+            id(ans_value) = value;
+            id(ans_status) = status;
+            id(ans_icon) = icon;
+            id(ans_duration) = duration > 0 ? duration : ${antwort_standard_s};
+        - if:
+            # Während einer Sprachausgabe merken, danach anzeigen
+            condition:
+              voice_assistant.is_running:
+            then:
+              - lambda: 'id(ans_pending) = true;'
+            else:
+              - script.execute: answer_show
+
+    # Abschnitt 3: esphome.voice_satellite_s3_show_question
+    - action: show_question
+      variables:
+        request_id: string
+        question: string
+        icon: string
+        timeout: int
+      then:
+        # Eine noch offene, andere Frage gilt als abgebrochen
+        - if:
+            condition:
+              lambda: 'return id(q_active) && id(q_request_id) != request_id;'
+            then:
+              - script.execute:
+                  id: question_finish
+                  antwort: "cancelled"
+        - lambda: |-
+            id(q_request_id) = request_id;
+            id(q_text) = question;
+            auto it = id(icon_map).find(icon);
+            id(q_glyph) = (it != id(icon_map).end()) ? it->second
+                                                    : id(icon_map)["information"];
+            id(q_timeout) = timeout > 0 ? timeout : ${frage_standard_s};
+            id(q_active) = true;
+        - lvgl.label.update:
+            id: question_icon_label
+            text: !lambda 'return id(q_glyph).c_str();'
+        - lvgl.label.update:
+            id: question_text_label
+            text: !lambda 'return id(q_text).c_str();'
+        - lvgl.widget.show: question_layer
+        - script.execute: question_timer
+
+    # Abschnitt 3: esphome.voice_satellite_s3_cancel_question
+    - action: cancel_question
+      variables:
+        request_id: string
+      then:
+        - if:
+            condition:
+              lambda: 'return id(q_active) && id(q_request_id) == request_id;'
+            then:
+              - script.execute:
+                  id: question_finish
+                  antwort: "cancelled"
+
+logger:
+  level: VERBOSE  # nur zur Fehlersuche, danach wieder auf DEBUG
+  logs:
+    wifi: DEBUG         # sonst steht das WLAN-Passwort im Log
+    wifi_esp32: DEBUG
+    lvgl: WARN          # unterdrückt die vielen Speicher-Meldungen
+    i2c: INFO
+    voice_assistant: DEBUG
+
+globals:
+  - id: status_text
+    type: std::string
+    restore_value: false
+    initial_value: '"Bootet..."'
+
+  # Gesprochener Antwortsatz (Standardanzeige während/nach der Sprachausgabe)
+  - id: tts_text
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+
+  # true, sobald Home Assistant verbunden ist (nicht nur das Log-Fenster)
+  - id: ha_connected
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
+  # true während eines OTA-Updates (Wake Word nicht neu starten)
+  - id: ota_running
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
+  # --- show_answer ---
+  - id: ans_value
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+  - id: ans_status
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+  - id: ans_icon
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+  - id: ans_duration
+    type: int
+    restore_value: false
+    initial_value: '8'
+  - id: ans_pending
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  # berechnet in answer_show
+  - id: ans_glyph
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+  - id: ans_bg
+    type: uint32_t
+    restore_value: false
+    initial_value: '0x1E88E5'
+  - id: ans_fg
+    type: uint32_t
+    restore_value: false
+    initial_value: '0xFFFFFF'
+
+  # --- show_question ---
+  - id: q_active
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: q_request_id
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+  - id: q_text
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+  - id: q_glyph
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+  - id: q_timeout
+    type: int
+    restore_value: false
+    initial_value: '30'
+
+  # Icons (Abschnitt 1.2): MDI-Name -> Glyphe (MDI 7.4.47),
+  # Basis-Set v1 + Wetter aus v1.3 (Codepunkte wie in wall-display.yaml).
+  # Neues Icon: hier eintragen UND unten bei &mdi_glyphs ergänzen.
+  - id: icon_map
+    type: std::map<std::string, std::string>
+    restore_value: false
+    initial_value: |-
+      {
+        {"check",            "\U000F012C"},
+        {"close",            "\U000F0156"},
+        {"alert",            "\U000F0026"},
+        {"information",      "\U000F02FC"},
+        {"help",             "\U000F02D6"},
+        {"trash-can",        "\U000F0A79"},
+        {"train",            "\U000F052C"},
+        {"washing-machine",  "\U000F072A"},
+        {"thermometer",      "\U000F050F"},
+        {"water-alert",      "\U000F1502"},
+        {"battery-alert",    "\U000F0083"},
+        {"power-plug",       "\U000F06A5"},
+        {"pool",             "\U000F0606"},
+        {"door-open",        "\U000F081C"},
+        {"molecule-co2",     "\U000F07E4"},
+        {"solar-power",      "\U000F0A72"},
+        {"printer",          "\U000F042A"},
+        {"cart",             "\U000F0110"},
+        {"wifi",             "\U000F05A9"},
+        {"bicycle-electric", "\U000F15B4"},
+        {"pump",             "\U000F1402"},
+        {"calendar",         "\U000F00ED"},
+        {"lightbulb",        "\U000F0335"},
+        {"fire",             "\U000F0238"},
+        // v1.3: Wetter
+        {"weather-sunny",           "\U000F0599"},
+        {"weather-night",           "\U000F0594"},
+        {"weather-partly-cloudy",   "\U000F0595"},
+        {"weather-cloudy",          "\U000F0590"},
+        {"weather-rainy",           "\U000F0597"},
+        {"weather-pouring",         "\U000F0596"},
+        {"weather-snowy",           "\U000F0598"},
+        {"weather-snowy-rainy",     "\U000F067F"},
+        {"weather-fog",             "\U000F0591"},
+        {"weather-hail",            "\U000F0592"},
+        {"weather-lightning",       "\U000F0593"},
+        {"weather-lightning-rainy", "\U000F067E"},
+        {"weather-windy",           "\U000F059D"}
+      }
+
+# ---------------------------------------------------------------
+# Busse
+# ---------------------------------------------------------------
+i2c:
+  - id: i2c_bus
+    sda: GPIO42
+    scl: GPIO41
+    scan: true
+
+spi:
+  clk_pin: GPIO38
+  mosi_pin: GPIO39
+
+# ---------------------------------------------------------------
+# Display und Beleuchtung
+# ---------------------------------------------------------------
+output:
+  # PWM statt ein/aus, damit die Helligkeit regelbar ist
+  - platform: ledc
+    pin: GPIO46
+    id: backlight_output
+    frequency: 5000Hz
+    # Falls 100 % dunkel und 0 % hell ist: nächste Zeile einkommentieren
+    # inverted: true
+
+display:
+  - platform: st7735
+    model: INITR_GREENTAB
+    device_width: 128
+    device_height: 128
+    col_start: 0
+    row_start: 0
+    cs_pin: GPIO21
+    dc_pin: GPIO45
+    reset_pin: GPIO40
+    rotation: 0
+    # Panel zeigt sonst Schwarz als Weiß und Grün als Magenta
+    invert_colors: true
+    id: lcd_display
+
+light:
+  - platform: esp32_rmt_led_strip
+    channel_colors: RGB  # GRB vertauschte Rot und Grün
+    pin: GPIO48
+    num_leds: 8
+    chipset: WS2812
+    name: "Status LEDs"
+    id: status_leds
+    restore_mode: ALWAYS_OFF
+    default_transition_length: 0s
+
+  # In Home Assistant: light.voice_satellite_s3_display_helligkeit
+  - platform: monochromatic
+    output: backlight_output
+    name: "Display Helligkeit"
+    id: display_backlight
+    icon: "mdi:brightness-6"
+    # Letzte Helligkeit nach Neustart wiederherstellen, sonst an
+    restore_mode: RESTORE_DEFAULT_ON
+    default_transition_length: 300ms
+    gamma_correct: 2.8
+
+# ---------------------------------------------------------------
+# Audio
+# ---------------------------------------------------------------
+switch:
+  - platform: gpio
+    pin: GPIO7  # PA_CTRL (NS4150)
+    name: "Verstärker Power"
+    id: amplifier_power
+    restore_mode: ALWAYS_ON
+    icon: "mdi:amplifier"
+
+i2s_audio:
+  - id: i2s_bus
+    i2s_mclk_pin: GPIO8
+    i2s_bclk_pin: GPIO9
+    i2s_lrclk_pin: GPIO10
+
+# ES8311: DAC für den Lautsprecher, I2C-Adresse 0x18
+audio_dac:
+  - platform: es8311
+    id: es8311_dac
+    i2c_id: i2c_bus
+    bits_per_sample: 16bit
+    sample_rate: 16000
+
+# ES7210: ADC für die Mikrofone, I2C-Adresse 0x40
+audio_adc:
+  - platform: es7210
+    id: es7210_adc
+    i2c_id: i2c_bus
+    address: 0x40
+    bits_per_sample: 16bit
+    sample_rate: 16000
+
+microphone:
+  - platform: i2s_audio
+    id: onboard_mic
+    i2s_audio_id: i2s_bus
+    i2s_din_pin: GPIO11  # I2S_ASDOUT
+    adc_type: external
+    pdm: false
+    bits_per_sample: 16bit
+    sample_rate: 16000
+    channel: stereo  # falls das Signal schlecht ist: left oder right testen
+
+speaker:
+  - platform: i2s_audio
+    id: onboard_speaker
+    i2s_audio_id: i2s_bus
+    i2s_dout_pin: GPIO12  # I2S_DSDIN
+    dac_type: external
+    bits_per_sample: 16bit
+    sample_rate: 16000
+    channel: mono
+    audio_dac: es8311_dac
+
+media_player:
+  - platform: speaker
+    id: es8311_media_player
+    name: "Sprachsatellit Audio"
+    announcement_pipeline:
+      speaker: onboard_speaker
+
+# ---------------------------------------------------------------
+# Skripte
+# ---------------------------------------------------------------
+script:
+  # Erfolg: kurz grün, dann aus
+  - id: led_success
+    mode: restart
+    then:
+      - light.turn_on:
+          id: status_leds
+          red: 0%
+          green: 100%
+          blue: 0%
+          brightness: 100%
+          transition_length: 0s
+      - delay: 1.5s
+      - light.turn_off:
+          id: status_leds
+          transition_length: 0s
+
+  # Fehler: kurz rot, dann aus
+  - id: led_error
+    mode: restart
+    then:
+      - light.turn_on:
+          id: status_leds
+          red: 100%
+          green: 0%
+          blue: 0%
+          brightness: 100%
+          transition_length: 0s
+      - delay: 1.5s
+      - light.turn_off:
+          id: status_leds
+          transition_length: 0s
+
+  # --- show_answer: Vollbild mit Icon in Statusfarbe ---
+  - id: answer_show
+    mode: restart
+    then:
+      - lambda: |-
+          // Statusfarbe (Abschnitt 1.1), unbekannt -> info
+          const std::string &s = id(ans_status);
+          uint32_t bg = 0x1E88E5;
+          if (s == "alarm")     bg = 0xE53935;
+          else if (s == "warn") bg = 0xFB8C00;
+          else if (s == "ok")   bg = 0x43A047;
+          else if (s == "on")   bg = 0xFDD835;
+          else if (s == "off")  bg = 0x616161;
+          id(ans_bg) = bg;
+          // Auf Gelb ist weiße Schrift schlecht lesbar
+          id(ans_fg) = (s == "on") ? 0x202020 : 0xFFFFFF;
+
+          // Icon (Abschnitt 1.2), unbekannt -> information
+          auto it = id(icon_map).find(id(ans_icon));
+          id(ans_glyph) = (it != id(icon_map).end()) ? it->second
+                                                    : id(icon_map)["information"];
+      - lvgl.widget.update:
+          id: answer_layer
+          bg_color: !lambda 'return lv_color_hex(id(ans_bg));'
+      - lvgl.label.update:
+          id: answer_icon_label
+          text_color: !lambda 'return lv_color_hex(id(ans_fg));'
+          text: !lambda 'return id(ans_glyph).c_str();'
+      - lvgl.label.update:
+          id: answer_value_label
+          text_color: !lambda 'return lv_color_hex(id(ans_fg));'
+          text: !lambda |-
+            // value nur anzeigen, wenn es höchstens 8 Zeichen hat
+            // (UTF-8-Zeichen zählen, nicht Bytes: "Grün" = 4)
+            int zeichen = 0;
+            for (unsigned char c : id(ans_value)) {
+              if ((c & 0xC0) != 0x80) zeichen++;
+            }
+            static std::string out;
+            out = (zeichen <= 8) ? id(ans_value) : std::string("");
+            return out.c_str();
+      - lvgl.widget.show: answer_layer
+      - delay: !lambda 'return id(ans_duration) * 1000;'
+      - lvgl.widget.hide: answer_layer
+
+  - id: answer_hide
+    then:
+      - script.stop: answer_show
+      - lambda: 'id(ans_pending) = false;'
+      - lvgl.widget.hide: answer_layer
+
+  # --- show_question: Timeout ---
+  - id: question_timer
+    mode: restart
+    then:
+      - delay: !lambda 'return id(q_timeout) * 1000;'
+      - script.execute:
+          id: question_finish
+          antwort: "timeout"
+
+  # Frage beenden und genau ein Event an Home Assistant senden
+  - id: question_finish
+    mode: queued
+    parameters:
+      antwort: string
+    then:
+      - if:
+          condition:
+            lambda: 'return id(q_active);'
+          then:
+            - lambda: 'id(q_active) = false;'
+            - homeassistant.event:
+                event: esphome.display_question_answer
+                data:
+                  device: ${node_name}
+                  request_id: !lambda 'return id(q_request_id);'
+                  answer: !lambda 'return antwort;'
+            - logger.log:
+                format: "Frage %s beantwortet: %s"
+                args: ['id(q_request_id).c_str()', 'antwort.c_str()']
+            - if:
+                # Timer nicht aus sich selbst heraus stoppen
+                condition:
+                  lambda: 'return antwort != "timeout";'
+                then:
+                  - script.stop: question_timer
+            - lvgl.widget.hide: question_layer
+
+  # Gesprochenen Satz nach 20 Sekunden ausblenden
+  - id: auto_clear
+    mode: restart
+    then:
+      # lange Texte länger stehen lassen, damit sie einmal durchlaufen
+      - delay: !lambda 'return id(tts_text).size() > 60 ? 40000 : 20000;'
+      - lambda: 'id(tts_text) = "";'
+      - lvgl.widget.refresh: response_label
+
+# ---------------------------------------------------------------
+# Intervalle
+# ---------------------------------------------------------------
+interval:
+  # Sicherheitsnetz: Wenn gerade nichts läuft, aber die Wake-Word-Erkennung
+  # aus ist, wird sie wieder gestartet
+  - interval: 3s
+    then:
+      - if:
+          condition:
+            and:
+              - lambda: 'return !id(ota_running);'
+              - not:
+                  voice_assistant.is_running:
+              - not:
+                  micro_wake_word.is_running:
+              - not:
+                  speaker.is_playing: onboard_speaker
+          then:
+            - micro_wake_word.start:
+
+  # Verbindung zu Home Assistant prüfen und Anzeige bei Änderung umschalten.
+  # state_subscription_only: zählt nur Home Assistant, nicht das Log-Fenster.
+  - interval: 1s
+    then:
+      - if:
+          condition:
+            api.connected:
+              state_subscription_only: true
+          then:
+            - if:
+                condition:
+                  lambda: 'return !id(ha_connected) && !id(ota_running);'
+                then:
+                  - lambda: |-
+                      id(ha_connected) = true;
+                      id(status_text) = "Bereit";
+                  - lvgl.widget.refresh: status_label
+                  - lvgl.widget.refresh: response_label
+                  # Abschnitt 4.4 (optional für Satelliten)
+                  - homeassistant.event:
+                      event: esphome.display_ready
+                      data:
+                        device: ${node_name}
+          else:
+            - if:
+                condition:
+                  lambda: 'return id(ha_connected) && !id(ota_running);'
+                then:
+                  - lambda: |-
+                      id(ha_connected) = false;
+                      id(status_text) = "Verbinde HA...";
+                  - lvgl.widget.refresh: status_label
+                  - lvgl.widget.refresh: response_label
+
+# ---------------------------------------------------------------
+# Wake Word und Sprachassistent
+# ---------------------------------------------------------------
+micro_wake_word:
+  microphone: onboard_mic
+  models:
+    - model: okay_nabu
+  on_wake_word_detected:
+    - voice_assistant.start:
+        wake_word: !lambda return wake_word;
+
+voice_assistant:
+  id: my_voice_assistant
+  microphone: onboard_mic
+  speaker: onboard_speaker
+  on_start:
+    - micro_wake_word.stop:
+  # Blau: nur während der Aufnahme
+  on_listening:
+    # Neuer Befehl: alte Antwort (auch eine gemerkte) verwerfen
+    - script.execute: answer_hide
+    - script.stop: auto_clear
+    - lambda: 'id(tts_text) = "";'
+    - lvgl.widget.refresh: response_label
+    - light.turn_on:
+        id: status_leds
+        red: 0%
+        green: 0%
+        blue: 100%
+        brightness: 100%
+        transition_length: 0s
+    - lambda: 'id(status_text) = "Höre zu...";'
+    - lvgl.widget.refresh: status_label
+  # Aufnahme beendet: blau aus
+  on_stt_vad_end:
+    - light.turn_off:
+        id: status_leds
+        transition_length: 0s
+  # Erfolg: kurz grün, gesprochenen Satz anzeigen
+  on_tts_start:
+    - script.execute: led_success
+    - lambda: |-
+        id(status_text) = "Spreche...";
+        id(tts_text) = x;
+    - lvgl.widget.refresh: response_label
+    - lvgl.widget.refresh: status_label
+  # Alles fertig (auch die Sprachausgabe)
+  on_idle:
+    - lambda: 'id(status_text) = "Bereit";'
+    - lvgl.widget.refresh: status_label
+    - script.execute: auto_clear
+    # Während der Sprachausgabe empfangene Antwort jetzt anzeigen
+    - if:
+        condition:
+          lambda: 'return id(ans_pending);'
+        then:
+          - lambda: 'id(ans_pending) = false;'
+          - script.execute: answer_show
+    - if:
+        condition:
+          lambda: 'return !id(ota_running);'
+        then:
+          - micro_wake_word.start:
+  # Fehler: kurz rot, dann aus
+  on_error:
+    - script.execute: led_error
+    - lambda: 'id(status_text) = "Fehler";'
+    - lvgl.widget.refresh: status_label
+    - delay: 3s
+    - lambda: 'id(status_text) = "Bereit";'
+    - lvgl.widget.refresh: status_label
+    - if:
+        condition:
+          lambda: 'return !id(ota_running);'
+        then:
+          - micro_wake_word.start:
+
+# ---------------------------------------------------------------
+# Tasten
+# ---------------------------------------------------------------
+binary_sensor:
+  # MINUS = Nein bei offener Frage
+  - platform: gpio
+    pin:
+      number: GPIO0
+      inverted: true
+      mode: INPUT_PULLUP
+    name: "MINUS Button"
+    on_press:
+      - if:
+          condition:
+            lambda: 'return id(q_active);'
+          then:
+            - script.execute:
+                id: question_finish
+                antwort: "no"
+
+  # PLUS = Ja bei offener Frage
+  - platform: gpio
+    pin:
+      number: GPIO4
+      inverted: true
+      mode: INPUT_PULLUP
+    name: "PLUS Button"
+    on_press:
+      - if:
+          condition:
+            lambda: 'return id(q_active);'
+          then:
+            - script.execute:
+                id: question_finish
+                antwort: "yes"
+
+  - platform: gpio
+    pin:
+      number: GPIO5
+      inverted: true
+      mode: INPUT_PULLUP
+    name: "PWR Button"
+    on_press:
+      then:
+        - if:
+            condition:
+              lambda: 'return !id(ota_running);'
+            then:
+              - logger.log: "PWR-Taste gedrückt: Starte Sprachassistent manuell"
+              - voice_assistant.start:
+
+# ---------------------------------------------------------------
+# Schriften
+# ---------------------------------------------------------------
+font:
+  - file:
+      type: gfonts
+      family: "Roboto"
+      weight: 400
+      italic: false
+    id: font_text
+    size: ${schrift_groesse}
+    glyphsets: [GF_Latin_Core]
+    ignore_missing_glyphs: true
+
+  # Fragetext (bis 40 Zeichen auf 3 Zeilen)
+  - file:
+      type: gfonts
+      family: "Roboto"
+      weight: 400
+      italic: false
+    id: font_small
+    size: 14
+    glyphsets: [GF_Latin_Core]
+    ignore_missing_glyphs: true
+
+  # value bei show_answer
+  - file:
+      type: gfonts
+      family: "Roboto"
+      weight: 700
+      italic: false
+    id: font_value
+    size: 26
+    glyphsets: [GF_Latin_Core]
+    ignore_missing_glyphs: true
+
+  # Icons: Material Design Icons, nur das Basis-Set v1
+  - file:
+      type: web
+      url: "https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/fonts/materialdesignicons-webfont.ttf"
+    id: font_icon_big
+    size: 64
+    glyphs: &mdi_glyphs
+      - "\U000F012C"  # check
+      - "\U000F0156"  # close
+      - "\U000F0026"  # alert
+      - "\U000F02FC"  # information
+      - "\U000F02D6"  # help
+      - "\U000F0A79"  # trash-can
+      - "\U000F052C"  # train
+      - "\U000F072A"  # washing-machine
+      - "\U000F050F"  # thermometer
+      - "\U000F1502"  # water-alert
+      - "\U000F0083"  # battery-alert
+      - "\U000F06A5"  # power-plug
+      - "\U000F0606"  # pool
+      - "\U000F081C"  # door-open
+      - "\U000F07E4"  # molecule-co2
+      - "\U000F0A72"  # solar-power
+      - "\U000F042A"  # printer
+      - "\U000F0110"  # cart
+      - "\U000F05A9"  # wifi
+      - "\U000F15B4"  # bicycle-electric
+      - "\U000F1402"  # pump
+      - "\U000F00ED"  # calendar
+      - "\U000F0335"  # lightbulb
+      - "\U000F0238"  # fire
+      # v1.3: Wetter
+      - "\U000F0599"  # weather-sunny
+      - "\U000F0594"  # weather-night
+      - "\U000F0595"  # weather-partly-cloudy
+      - "\U000F0590"  # weather-cloudy
+      - "\U000F0597"  # weather-rainy
+      - "\U000F0596"  # weather-pouring
+      - "\U000F0598"  # weather-snowy
+      - "\U000F067F"  # weather-snowy-rainy
+      - "\U000F0591"  # weather-fog
+      - "\U000F0592"  # weather-hail
+      - "\U000F0593"  # weather-lightning
+      - "\U000F067E"  # weather-lightning-rainy
+      - "\U000F059D"  # weather-windy
+
+  - file:
+      type: web
+      url: "https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/fonts/materialdesignicons-webfont.ttf"
+    id: font_icon_small
+    size: 28
+    glyphs: *mdi_glyphs
+
+# ---------------------------------------------------------------
+# Anzeige (LVGL)
+# ---------------------------------------------------------------
+lvgl:
+  id: my_lvgl
+  log_level: WARN
+  bg_color: "0x000000"
+  displays:
+    - lcd_display
+
+  # Normalansicht
+  pages:
+    - id: page_0
+      layout:
+        type: flex
+        flex_flow: column
+        pad_row: 4
+        flex_align_main: center
+        flex_align_cross: center
+      widgets:
+        - container:
+            width: 120
+            height: 26
+            bg_color: "0x111111"
+            border_width: 0
+            layout:
+              type: flex
+              flex_flow: row
+              flex_align_main: center
+              flex_align_cross: center
+            widgets:
+              - label:
+                  id: status_label
+                  text: !lambda 'return id(status_text).c_str();'
+                  text_color: "0x00FF00"
+                  text_font: font_text
+
+        - container:
+            width: 120
+            height: 92
+            bg_color: "0x1a1a1a"
+            radius: 6
+            border_width: 1
+            border_color: "0x333333"
+            pad_all: 4
+            scrollable: false
+            layout:
+              type: flex
+              flex_flow: column
+              flex_align_main: center
+              flex_align_cross: center
+            widgets:
+              # Passt der Text nicht ins Feld, läuft er langsam nach oben
+              # durch und wieder zurück (LVGL long_mode SCROLL)
+              - label:
+                  id: response_label
+                  long_mode: SCROLL
+                  max_height: 82
+                  text: !lambda |-
+                    if (!id(tts_text).empty()) {
+                      return id(tts_text).c_str();
+                    }
+                    // Erst nach der Verbindung zu Home Assistant anzeigen
+                    if (id(ha_connected)) {
+                      return "Okay Nabu";
+                    }
+                    return "";
+                  text_color: "0xFFFFFF"
+                  text_font: font_text
+                  width: 110
+                  text_align: center
+
+  # Überlagerungen über der Normalansicht
+  top_layer:
+    widgets:
+      # show_answer: Vollbild in Statusfarbe
+      - container:
+          id: answer_layer
+          hidden: true
+          scrollable: false
+          x: 0
+          y: 0
+          width: 128
+          height: 128
+          radius: 0
+          border_width: 0
+          pad_all: 4
+          bg_color: "0x1E88E5"
+          bg_opa: COVER
+          layout:
+            type: flex
+            flex_flow: column
+            pad_row: 0
+            flex_align_main: center
+            flex_align_cross: center
+          widgets:
+            - label:
+                id: answer_icon_label
+                text: ""
+                text_font: font_icon_big
+                text_color: "0xFFFFFF"
+            - label:
+                id: answer_value_label
+                text: ""
+                text_font: font_value
+                text_color: "0xFFFFFF"
+                text_align: center
+
+      # show_question: Icon, Frage, Tastenhinweis
+      - container:
+          id: question_layer
+          hidden: true
+          scrollable: false
+          x: 0
+          y: 0
+          width: 128
+          height: 128
+          radius: 0
+          border_width: 0
+          pad_all: 4
+          bg_color: "0x101010"
+          bg_opa: COVER
+          layout:
+            type: flex
+            flex_flow: column
+            pad_row: 3
+            flex_align_main: space_between
+            flex_align_cross: center
+          widgets:
+            - label:
+                id: question_icon_label
+                text: ""
+                text_font: font_icon_small
+                text_color: "0x1E88E5"
+            - label:
+                id: question_text_label
+                text: ""
+                text_font: font_small
+                text_color: "0xFFFFFF"
+                text_align: center
+                width: 120
+            - container:
+                width: 120
+                height: 22
+                scrollable: false
+                border_width: 0
+                pad_all: 0
+                bg_opa: TRANSP
+                layout:
+                  type: flex
+                  flex_flow: row
+                  flex_align_main: space_between
+                  flex_align_cross: center
+                widgets:
+                  - label:
+                      text: "- Nein"
+                      text_font: font_text
+                      text_color: "0xE53935"
+                  - label:
+                      text: "Ja +"
+                      text_font: font_text
+                      text_color: "0x43A047"

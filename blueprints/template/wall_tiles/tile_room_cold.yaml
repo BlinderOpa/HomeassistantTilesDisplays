@@ -1,0 +1,94 @@
+blueprint:
+  name: "Wall tiles: rooms too cold"
+  description: >
+    Finds ALL temperature sensors that are assigned to an area and shows the areas below a limit
+    (window open too long?). Hysteresis 0.5 °C. Attribute "list" = [{room, value, t}].
+  domain: template
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/template/wall_tiles/tile_room_cold.yaml
+  input:
+    limit:
+      name: Limit (°C)
+      default: 20
+      selector: {number: {min: 5, max: 25, step: 0.5, unit_of_measurement: °C}}
+    exclude:
+      name: Exclude sensors (outdoor, fridge, sauna …)
+      default: []
+      selector: {entity: {domain: sensor, multiple: true}}
+    exclude_areas:
+      name: Exclude areas (names, e.g. Keller, Garage)
+      default: []
+      selector: {text: {multiple: true}}
+    prio:
+      name: Priority
+      default: 17
+      selector: {number: {min: 0, max: 99}}
+
+variables:
+  lim: !input limit
+  excl: !input exclude
+  excl_a: !input exclude_areas
+  prio_: !input prio
+
+sensor:
+  icon: mdi:thermometer-alert
+  state: >
+      {% set before = (this.attributes.get('list', []) | map(attribute='room') | list) if this is defined and this.attributes is defined else [] %}
+      {% set ns = namespace(l=[], seen=[]) %}
+      {% for s in states.sensor | selectattr('attributes.device_class', 'defined') | selectattr('attributes.device_class', 'eq', 'temperature')
+            if s.entity_id not in excl and s.state | is_number and area_name(s.entity_id) and area_name(s.entity_id) not in excl_a %}
+        {% set room = area_name(s.entity_id) %}
+        {% set t = s.state | float %}
+        {% if (t < lim | float or (room in before and t < lim | float + 0.5)) and room not in ns.seen %}
+          {% set ns.seen = ns.seen + [room] %}
+          {% set ns.l = ns.l + [{'room': room, 'value': ('%.1f' | format(t)) | replace('.', ',') ~ '°', 't': t}] %}
+        {% endif %}
+      {% endfor %}
+      {% set l = ns.l | sort(attribute='t') %}
+      {{ 'warn' if l else 'hidden' }}
+  attributes:
+    list: >
+      {% set before = (this.attributes.get('list', []) | map(attribute='room') | list) if this is defined and this.attributes is defined else [] %}
+      {% set ns = namespace(l=[], seen=[]) %}
+      {% for s in states.sensor | selectattr('attributes.device_class', 'defined') | selectattr('attributes.device_class', 'eq', 'temperature')
+            if s.entity_id not in excl and s.state | is_number and area_name(s.entity_id) and area_name(s.entity_id) not in excl_a %}
+        {% set room = area_name(s.entity_id) %}
+        {% set t = s.state | float %}
+        {% if (t < lim | float or (room in before and t < lim | float + 0.5)) and room not in ns.seen %}
+          {% set ns.seen = ns.seen + [room] %}
+          {% set ns.l = ns.l + [{'room': room, 'value': ('%.1f' | format(t)) | replace('.', ',') ~ '°', 't': t}] %}
+        {% endif %}
+      {% endfor %}
+      {% set l = ns.l | sort(attribute='t') %}
+      {{ l }}
+    value: >
+      {% set before = (this.attributes.get('list', []) | map(attribute='room') | list) if this is defined and this.attributes is defined else [] %}
+      {% set ns = namespace(l=[], seen=[]) %}
+      {% for s in states.sensor | selectattr('attributes.device_class', 'defined') | selectattr('attributes.device_class', 'eq', 'temperature')
+            if s.entity_id not in excl and s.state | is_number and area_name(s.entity_id) and area_name(s.entity_id) not in excl_a %}
+        {% set room = area_name(s.entity_id) %}
+        {% set t = s.state | float %}
+        {% if (t < lim | float or (room in before and t < lim | float + 0.5)) and room not in ns.seen %}
+          {% set ns.seen = ns.seen + [room] %}
+          {% set ns.l = ns.l + [{'room': room, 'value': ('%.1f' | format(t)) | replace('.', ',') ~ '°', 't': t}] %}
+        {% endif %}
+      {% endfor %}
+      {% set l = ns.l | sort(attribute='t') %}
+      {% if l | count == 1 %}{{ l[0].room }} {{ l[0].value }}{% elif l | count > 1 %}{{ l | count }} Räume{% endif %}
+    detail: >
+      {% set before = (this.attributes.get('list', []) | map(attribute='room') | list) if this is defined and this.attributes is defined else [] %}
+      {% set ns = namespace(l=[], seen=[]) %}
+      {% for s in states.sensor | selectattr('attributes.device_class', 'defined') | selectattr('attributes.device_class', 'eq', 'temperature')
+            if s.entity_id not in excl and s.state | is_number and area_name(s.entity_id) and area_name(s.entity_id) not in excl_a %}
+        {% set room = area_name(s.entity_id) %}
+        {% set t = s.state | float %}
+        {% if (t < lim | float or (room in before and t < lim | float + 0.5)) and room not in ns.seen %}
+          {% set ns.seen = ns.seen + [room] %}
+          {% set ns.l = ns.l + [{'room': room, 'value': ('%.1f' | format(t)) | replace('.', ',') ~ '°', 't': t}] %}
+        {% endif %}
+      {% endfor %}
+      {% set l = ns.l | sort(attribute='t') %}
+      {% if l | count > 1 %}{% for x in l %}{{ x.room }} {{ x.value }}{{ ', ' if not loop.last }}{% endfor %}{% else %}Fenster offen?{% endif %}
+    prio: "{{ prio_ | int }}"
+    title: "Zu kalt"
+    progress: -1
+    tap: "none"

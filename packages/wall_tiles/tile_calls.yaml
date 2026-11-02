@@ -1,0 +1,193 @@
+# Tiles: phone (AVM FRITZ!Box call monitor)
+#   tile_call          – incoming call: name/number while ringing (+ popup on the wall display)
+#   tile_missed_calls  – list of missed calls (max. 10), tap = clear list.
+#                        An entry also disappears on call-back / answered call from that number, or after 1 day.
+#
+# Source: integration "AVM FRITZ!Box Call Monitor" with a phone book:
+#   states: idle | ringing | dialing | talking
+#   ringing: attributes "from" (number) and "from_name" (name from the phone book)
+# Missed = it rang and then went straight to "idle".
+# The list survives restarts (trigger-based template sensors are restored).
+#
+# ── ADAPT ──────────────────────────────────────────────────────────────
+#   sensor.fritzbox_call_monitor   your call monitor sensor (search & replace, 9 occurrences)
+#   COUNTRY CODE: numbers are compared on their last 9 digits; the regex '^(0049|49)'
+#                 strips the German prefix – change 49 to your country code.
+#   The popup uses script.display_answer (blueprint "Wall tiles: show answer on displays").
+
+script:
+  missed_calls_clear:
+    alias: "Clear missed calls"
+    icon: mdi:phone-remove
+    sequence:
+      - event: missed_calls_clear
+
+automation:
+  - id: call_popup
+    alias: "Phone: show caller on wall display"
+    mode: restart
+    triggers:
+      - trigger: state
+        entity_id: sensor.fritzbox_call_monitor
+        to: "ringing"
+    variables:
+      nr: "{{ state_attr('sensor.fritzbox_call_monitor', 'from') or '' }}"
+      name: "{{ state_attr('sensor.fritzbox_call_monitor', 'from_name') or '' }}"
+      known: "{{ name not in ['', 'unknown', nr] }}"
+    actions:
+      - action: script.display_answer
+        data:
+          target: wall
+          title: "Anruf"
+          value: "{{ name if known else (nr if nr else 'unbekannt') }}"
+          detail: "{{ nr if known else '' }}"
+          status: info
+          icon: phone-ring
+          duration: 30
+
+  # Voice: "Wer hat angerufen?" – reads the missed calls (name, otherwise the number digit by digit).
+  # Clearing by voice: blueprint "voice: acknowledge a tile" with tile sensor.tile_missed_calls.
+  - id: voice_missed_calls
+    alias: "Voice: who called?"
+    mode: parallel
+    triggers:
+      - trigger: conversation
+        command:
+          - "Wer hat angerufen"
+          - "Hat jemand angerufen"
+          - "Verpasste Anrufe"
+    variables:
+      calls: "{{ state_attr('sensor.missed_calls', 'list') or [] }}"
+      n: "{{ calls | count }}"
+      who: >
+        {% set ns = namespace(l=[]) %}
+        {% for a in calls[:3] %}
+          {% set d = as_datetime(a.time | string, none) %}
+          {% set t = (d | as_local).strftime('%H:%M') if d is not none else '' %}
+          {% set nm = a.name if a.name else ((a.nr | string) | list | join(' ')) %}
+          {% set ns.l = ns.l + [nm ~ ((' um ' ~ t) if t else '')] %}
+        {% endfor %}
+        {{ ns.l }}
+      first: "{{ ((calls[0].name or calls[0].nr) | string) if n > 0 else '' }}"
+    actions:
+      - action: script.display_answer
+        continue_on_error: true
+        data:
+          target: "{{ trigger.device_id }}"
+          title: "Verpasst ({{ n }})"
+          value: "{{ first[:20] if n > 0 else 'keine' }}"
+          detail: "{{ 'Löschen: „Anrufe gelesen“' if n > 0 else '' }}"
+          status: "{{ 'warn' if n > 0 else 'ok' }}"
+          icon: "{{ 'phone-missed' if n > 0 else 'check' }}"
+      - set_conversation_response: >
+          {% if n == 0 %}Niemand hat angerufen.
+          {% elif n == 1 %}Ein verpasster Anruf: {{ who[0] }}.
+          {% else %}{{ n }} verpasste Anrufe: {{ who | join(', ') }}{{ ' und weitere' if n > 3 else '' }}.{% endif %}
+
+template:
+  # ---------- list of missed calls ----------
+  - triggers:
+      - trigger: state
+        entity_id: sensor.fritzbox_call_monitor
+        from: "ringing"
+        to: "idle"
+        id: missed
+      - trigger: state
+        entity_id: sensor.fritzbox_call_monitor
+        to: "dialing"
+        id: callback
+      - trigger: state
+        entity_id: sensor.fritzbox_call_monitor
+        to: "talking"
+        id: answered
+      - trigger: time_pattern
+        minutes: "/30"
+        id: cleanup
+      - trigger: event
+        event_type: missed_calls_clear
+        id: clear
+    sensor:
+      - name: "Missed Calls"
+        unique_id: missed_calls
+        icon: mdi:phone-missed
+        device_class: timestamp
+        # state = time of the last change; the count is in sensor.missed_calls_count
+        state: "{{ now().isoformat() }}"
+        attributes:
+          list: >
+            {%- set old = this.attributes.get('list', []) if this is defined and this.attributes is defined else [] -%}
+            {%- macro norm(n) -%}{{ (n | string | regex_replace('[^0-9]', '') | regex_replace('^(0049|49)', '0'))[-9:] }}{%- endmacro -%}
+            {%- set ns = namespace(l=[]) -%}
+            {%- if trigger.id == 'clear' -%}
+            {%- elif trigger.id in ['callback', 'answered'] -%}
+              {%- set a = trigger.to_state.attributes -%}
+              {%- set other = norm(a.get('to') if trigger.id == 'callback' else a.get('with')) -%}
+              {%- for x in old -%}{%- if other == '' or norm(x.nr) != other -%}{%- set ns.l = ns.l + [x] -%}{%- endif -%}{%- endfor -%}
+            {%- elif trigger.id == 'cleanup' -%}
+              {%- for x in old -%}{%- set t = as_datetime(x.time) -%}{%- if t is not none and now() - t < timedelta(days=1) -%}{%- set ns.l = ns.l + [x] -%}{%- endif -%}{%- endfor -%}
+            {%- else -%}
+              {%- set a = trigger.from_state.attributes -%}
+              {%- set nr = a.get('from') or '' -%}
+              {%- set name = a.get('from_name') or '' -%}
+              {%- set ns.l = ([{'name': name if name not in ['', 'unknown', nr] else '',
+                                'nr': nr if nr else 'unbekannt',
+                                'time': now().isoformat()}] + old)[:10] -%}
+            {%- endif -%}
+            {{ ns.l }}
+
+  # Count as a separate state-based sensor (keeps the list logic in one place)
+  - sensor:
+      - name: "Missed Calls Count"
+        unique_id: missed_calls_count
+        icon: mdi:phone-missed
+        state: "{{ (state_attr('sensor.missed_calls', 'list') or []) | count }}"
+
+  # ---------- tiles ----------
+  - sensor:
+      - name: "Tile Call"
+        unique_id: tile_call
+        icon: mdi:phone-ring
+        state: "{{ 'info' if is_state('sensor.fritzbox_call_monitor', 'ringing') else 'hidden' }}"
+        attributes:
+          prio: 2
+          title: "Anruf"
+          value: >
+            {% set nr = state_attr('sensor.fritzbox_call_monitor', 'from') or '' %}
+            {% set name = state_attr('sensor.fritzbox_call_monitor', 'from_name') or '' %}
+            {{ name if name not in ['', 'unknown', nr] else (nr if nr else 'unbekannt') }}
+          detail: >
+            {% set nr = state_attr('sensor.fritzbox_call_monitor', 'from') or '' %}
+            {% set name = state_attr('sensor.fritzbox_call_monitor', 'from_name') or '' %}
+            {{ nr if name not in ['', 'unknown', nr] else '' }}
+          progress: -1
+          tap: "none"
+
+      - name: "Tile Missed Calls"
+        unique_id: tile_missed_calls
+        icon: mdi:phone-missed
+        state: "{{ 'warn' if (state_attr('sensor.missed_calls', 'list') or []) | count > 0 else 'hidden' }}"
+        attributes:
+          prio: 14
+          title: >
+            {% set n = (state_attr('sensor.missed_calls', 'list') or []) | count %}
+            Verpasst{{ ' (' ~ n ~ ')' if n > 1 }}
+          value: >
+            {% set l = state_attr('sensor.missed_calls', 'list') or [] %}
+            {{ (l[0].name or l[0].nr) if l else '' }}
+          detail: >
+            {% set l = state_attr('sensor.missed_calls', 'list') or [] %}
+            {% macro when(iso) -%}
+              {%- set t = as_datetime(iso) -%}
+              {%- if t is none -%}
+              {%- elif t.date() == now().date() -%}{{ t.strftime('%H:%M') }}
+              {%- elif t.date() == (now() - timedelta(days=1)).date() -%}gestern {{ t.strftime('%H:%M') }}
+              {%- else -%}{{ t.strftime('%d.%m. %H:%M') }}{%- endif -%}
+            {%- endmacro %}
+            {% if l %}
+              {% set ns = namespace(t=[when(l[0].time)]) %}
+              {% for x in l[1:3] %}{% set ns.t = ns.t + [(x.name or x.nr) ~ ' ' ~ when(x.time)] %}{% endfor %}
+              {{ ns.t | join(' · ') }}
+            {% endif %}
+          progress: -1
+          tap: "ack"
+          action: "script.missed_calls_clear"

@@ -1,0 +1,92 @@
+blueprint:
+  name: "Wall tiles: hot water cold"
+  description: >
+    Visible when the domestic hot water drops below a limit (stays until limit + hysteresis).
+    Shows the temperature and estimates the time until the target is reached, based on
+    a "Derivative" helper (°C/h, time window 15 min) you create in the UI from the DHW sensor.
+    Not rising → "wartet", or "gesperrt bis HH:MM" if a Luxtronik-style blocking schedule
+    ("00:00-06:00/10:00-12:00/…") is given.
+  domain: template
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/template/wall_tiles/tile_hot_water.yaml
+  input:
+    temp_entity:
+      name: Hot water temperature
+      selector: {entity: {domain: sensor}}
+    target_entity:
+      name: Target temperature (number/sensor, optional)
+      default: ""
+      selector: {entity: {}}
+    target_default:
+      name: Target if no entity
+      default: 50
+      selector: {number: {min: 30, max: 70, unit_of_measurement: °C}}
+    rise_entity:
+      name: Rise in °C/h (Derivative helper, optional)
+      default: ""
+      selector: {entity: {domain: sensor}}
+    schedule_entity:
+      name: Blocking schedule text (optional)
+      default: ""
+      selector: {entity: {}}
+    limit:
+      name: Show below (°C)
+      default: 46
+      selector: {number: {min: 20, max: 70, unit_of_measurement: °C}}
+    hysteresis:
+      name: Hysteresis (K)
+      default: 2
+      selector: {number: {min: 0, max: 10, step: 0.5}}
+    prio:
+      name: Priority
+      default: 23
+      selector: {number: {min: 0, max: 99}}
+
+variables:
+  t_e: !input temp_entity
+  target_e: !input target_entity
+  target_d: !input target_default
+  rise_e: !input rise_entity
+  sched_e: !input schedule_entity
+  limit_: !input limit
+  hyst: !input hysteresis
+  prio_: !input prio
+
+sensor:
+  icon: mdi:water-thermometer
+  state: >
+    {% set t = states(t_e) | float(none) %}
+    {% set was_on = this.state is defined and this.state not in ['hidden', 'unknown', 'unavailable'] %}
+    {% if t is none %}hidden
+    {% elif t < limit_ | float or (was_on and t < limit_ | float + hyst | float) %}warn
+    {% else %}hidden{% endif %}
+  attributes:
+    prio: "{{ prio_ | int }}"
+    title: "Warmwasser"
+    value: >
+      {% set t = states(t_e) | float(0) %}
+      {% set target = states(target_e) | float(target_d | float) if target_e else target_d | float %}
+      {% set rate = states(rise_e) | float(0) if rise_e else 0 %}
+      {% if rate >= 1 and target > t %}
+        {% set m = ((target - t) / rate * 60) | round(0) | int %}
+        {{ t | round(0) | int }}° · {{ (m // 60 ~ ':' ~ '%02d' | format(m % 60) ~ ' h') if m >= 60 else (m ~ ' min') }}
+      {% else %}{{ t | round(0) | int }}°{% endif %}
+    detail: >
+      {% set target = states(target_e) | float(target_d | float) if target_e else target_d | float %}
+      {% set rate = states(rise_e) | float(0) if rise_e else 0 %}
+      {% if rate >= 1 %}heizt auf {{ target | round(0) | int }}°
+      {% else %}
+        {% set plan = states(sched_e) if sched_e else '' %}
+        {% set now_s = now().strftime('%H:%M') %}
+        {% set ns = namespace(until='') %}
+        {% for f in plan.split('/') if '-' in f %}
+          {% set a, b = f.split('-')[0], f.split('-')[1] %}
+          {% set b_cmp = '24:00' if b == '00:00' else b %}
+          {% if a != b and a <= now_s < b_cmp %}{% set ns.until = b %}{% endif %}
+        {% endfor %}
+        {{ 'gesperrt bis ' ~ ns.until if ns.until else 'wartet auf Aufheizen' }}
+      {% endif %}
+    progress: >
+      {% set t = states(t_e) | float(0) %}
+      {% set target = states(target_e) | float(target_d | float) if target_e else target_d | float %}
+      {{ [[((t - 20) / (target - 20) * 100) | round(0) | int, 0] | max, 100] | min if target > 20 else -1 }}
+    tap: "none"

@@ -1,0 +1,18 @@
+# Your own device file – put it in the ESPHome dashboard folder (config/esphome/).
+# It only sets the name and key; everything else comes from the repository.
+# Updating = "Clean build files" + install; ESPHome fetches the new version (refresh).
+substitutions:
+  node_name: my-voice-c6             # keep your existing node name → entity ids stay the same
+  friendly_name: "My Voice C6"
+  api_key: !secret voice_satellite_c6_api_key       # one key per device in secrets.yaml
+
+packages:
+  wall_tiles:
+    url: https://github.com/BlinderOpa/HomeassistantTilesDisplays
+    ref: main               # or a tag, e.g. v1.0.0, to update only when you choose
+    files: [esphome/voice-satellite-c6.yaml]
+    refresh: 1d
+
+# Alternative without GitHub (local copy next to this file):
+# packages:
+#   wall_tiles: !include voice-satellite-c6.yaml

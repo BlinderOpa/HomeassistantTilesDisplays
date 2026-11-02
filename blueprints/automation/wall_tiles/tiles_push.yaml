@@ -1,0 +1,70 @@
+blueprint:
+  name: "Wall tiles: push tiles to an ESPHome display"
+  description: >
+    Sends the tile list from sensor.wall_tiles (package tiles_collector.yaml) to one ESPHome
+    device via its API action "set_tiles" – on every change, after the debug switch,
+    on HA start and when the device reports "esphome.display_ready".
+
+    Create one automation per display.
+    "Compact" sends only id, tap, status, title, value, detail (saves RAM on small devices).
+  domain: automation
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/automation/wall_tiles/tiles_push.yaml
+  input:
+    node_name:
+      name: ESPHome node name
+      description: >
+        As in the device YAML (esphome: name:), e.g. "wall-display".
+        The action called is esphome.<node_name with - replaced by _>_set_tiles.
+      selector:
+        text:
+    compact:
+      name: Compact payload (small displays)
+      default: false
+      selector:
+        boolean:
+    max_tiles:
+      name: Max. number of tiles
+      default: 12
+      selector:
+        number:
+          min: 1
+          max: 12
+
+mode: restart
+
+triggers:
+  - trigger: state
+    entity_id: sensor.wall_tiles
+    attribute: tiles
+  - trigger: state
+    entity_id: input_boolean.wall_tiles_debug
+  - trigger: event
+    event_type: esphome.display_ready
+    event_data:
+      device: !input node_name
+  - trigger: homeassistant
+    event: start
+
+variables:
+  node: !input node_name
+  compact_: !input compact
+  max_: !input max_tiles
+  service: "esphome.{{ node | replace('-', '_') }}_set_tiles"
+  payload: >
+    {% set ns = namespace(l=[]) %}
+    {% for k in (state_attr('sensor.wall_tiles', 'tiles') or [])[:max_ | int] %}
+      {% if compact_ %}
+        {% set ns.l = ns.l + [{'id': k.id, 'tap': k.tap, 'status': k.status,
+                               'title': k.title, 'value': k.value, 'detail': k.detail}] %}
+      {% else %}
+        {% set ns.l = ns.l + [k] %}
+      {% endif %}
+    {% endfor %}
+    {{ ns.l | to_json }}
+
+actions:
+  - delay: 2   # collect a moment if several tiles change at once
+  - action: "{{ service }}"
+    continue_on_error: true   # device may be offline
+    data:
+      tiles: "{{ payload }}"

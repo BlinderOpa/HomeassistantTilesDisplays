@@ -1,0 +1,59 @@
+blueprint:
+  name: "Wall tiles: next train (helper sensor)"
+  description: >
+    Helper sensor for the Deutsche Bahn integration (HACS "db_info" style connection sensors).
+    State = delay of the next connection in minutes (0 = on time; the integration writes no real
+    departure when on time). Attributes: departure_plan, departure_real, platform, cancelled.
+    Used by the tile blueprint "train" and the voice blueprint "is my train on time?".
+    Name the entity e.g. "Train Next" → sensor.train_next.
+  domain: template
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/template/wall_tiles/train_next.yaml
+  input:
+    connection_entity:
+      name: First connection sensor of your DB integration
+      selector: {entity: {domain: sensor}}
+    display_entity:
+      name: Optional extra text sensor checked for "Ausfall"/"cancel"
+      default: ""
+      selector: {entity: {domain: sensor}}
+
+variables:
+  c: !input connection_entity
+  d: !input display_entity
+
+sensor:
+  icon: mdi:train
+  unit_of_measurement: "min"
+  state: >
+    {% set s = states[c] %}
+    {% set a = s.attributes if s is not none else {} %}
+    {% set p = a.get('departure_time') or a.get('Departure Time') %}
+    {% set r = a.get('departure_time_real') or a.get('Departure Time Real') %}
+    {% set plan = as_datetime(p | string) if p else none %}
+    {% set real = as_datetime(r | string) if r else none %}
+    {% if plan and real %}{{ [((real - plan).total_seconds() / 60) | round(0) | int, 0] | max }}{% else %}0{% endif %}
+  availability: >
+    {% set s = states[c] %}
+    {{ s is not none and (s.attributes.get('departure_time') or s.attributes.get('Departure Time')) is not none }}
+  attributes:
+    departure_plan: >
+      {% set a = states[c].attributes if states[c] is not none else {} %}
+      {% set p = a.get('departure_time') or a.get('Departure Time') %}
+      {{ as_local(as_datetime(p | string)).strftime('%H:%M') if p else '' }}
+    departure_real: >
+      {% set a = states[c].attributes if states[c] is not none else {} %}
+      {% set p = a.get('departure_time') or a.get('Departure Time') %}
+      {% set r = a.get('departure_time_real') or a.get('Departure Time Real') or p %}
+      {{ as_local(as_datetime(r | string)).strftime('%H:%M') if r else '' }}
+    platform: >
+      {% set a = states[c].attributes if states[c] is not none else {} %}
+      {% set dl = a.get('details') or a.get('Details') or [] %}
+      {% set d0 = dl[0] if dl is not string and dl | count > 0 else {} %}
+      {{ d0.get('Departure Platform', '') if d0 is mapping else '' }}
+    train: >
+      {% set a = states[c].attributes if states[c] is not none else {} %}
+      {{ ((a.get('name') or a.get('Name') or '') | string).split(' ')[0] }}
+    cancelled: >
+      {% set a = states[c].attributes if states[c] is not none else {} %}
+      {% set t = ((a.get('problems') or a.get('Problems') or '') | string ~ ' ' ~ (states(d) if d else '')) | lower %}
+      {{ 'ausfall' in t or 'fällt' in t or 'faellt' in t or 'cancel' in t }}

@@ -1,0 +1,160 @@
+# Base view "weather station" for the 7" display
+# The display ONLY reads these sensor.ws_* entities. Changing a source = change one line here,
+# the display does not need to be reflashed.
+#
+# ── ADAPT ──────────────────────────────────────────────────────────────
+#   sensor.outdoor_temperature   outdoor temperature (any sensor; 4 occurrences in the max/min block)
+#   weather.home                 weather entity (outdoor humidity attribute + daily forecast)
+#   sensor.indoor_temperature / sensor.indoor_humidity   the room the display hangs in
+#   Display brightness: blueprint "Wall tiles: display brightness by time of day".
+template:
+  # ---------- outdoor ----------
+  - sensor:
+      - name: "WS Outdoor Temp"
+        unique_id: ws_outdoor_temp
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state_class: measurement
+        state: "{{ states('sensor.outdoor_temperature') | float(none) }}"
+        availability: "{{ states('sensor.outdoor_temperature') | is_number }}"
+
+      - name: "WS Outdoor Humidity"
+        unique_id: ws_outdoor_humidity
+        unit_of_measurement: "%"
+        device_class: humidity
+        state_class: measurement
+        state: "{{ state_attr('weather.home', 'humidity') | float(none) }}"
+        availability: "{{ state_attr('weather.home', 'humidity') is number }}"
+
+  # max/min outdoor since midnight (resets to the current value at 0:00)
+  - triggers:
+      - trigger: state
+        entity_id: sensor.outdoor_temperature
+      - trigger: time
+        at: "00:00:00"
+        id: reset
+      - trigger: homeassistant
+        event: start
+      # right after "reload template entities" and regularly, otherwise max/min
+      # stays unknown until the outdoor temperature changes
+      - trigger: event
+        event_type: event_template_reloaded
+      - trigger: time_pattern
+        minutes: "/10"
+    sensor:
+      - name: "WS Outdoor Max"
+        unique_id: ws_outdoor_max
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state: >
+          {% set t = states('sensor.outdoor_temperature') | float(none) %}
+          {% set old = this.state | float(none) if this is defined else none %}
+          {% if t is none %}{{ old }}
+          {% elif trigger.id == 'reset' or old is none %}{{ t }}
+          {% else %}{{ [t, old] | max }}{% endif %}
+      - name: "WS Outdoor Min"
+        unique_id: ws_outdoor_min
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state: >
+          {% set t = states('sensor.outdoor_temperature') | float(none) %}
+          {% set old = this.state | float(none) if this is defined else none %}
+          {% if t is none %}{{ old }}
+          {% elif trigger.id == 'reset' or old is none %}{{ t }}
+          {% else %}{{ [t, old] | min }}{% endif %}
+
+  # ---------- indoor ----------
+  - sensor:
+      - name: "WS Indoor Temp"
+        unique_id: ws_indoor_temp
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state_class: measurement
+        state: "{{ states('sensor.indoor_temperature') | float(none) }}"
+        availability: "{{ states('sensor.indoor_temperature') | is_number }}"
+
+      - name: "WS Indoor Humidity"
+        unique_id: ws_indoor_humidity
+        unit_of_measurement: "%"
+        device_class: humidity
+        state_class: measurement
+        state: "{{ states('sensor.indoor_humidity') | float(none) }}"
+        availability: "{{ states('sensor.indoor_humidity') | is_number }}"
+
+      # comfort: gut | trocken | feucht | kalt | warm | unbekannt  (display shows a smiley)
+      - name: "WS Comfort"
+        unique_id: ws_comfort
+        icon: mdi:emoticon-outline
+        state: >
+          {% set t = states('sensor.indoor_temperature') | float(none) %}
+          {% set h = states('sensor.indoor_humidity') | float(none) %}
+          {% if t is none or h is none %}unbekannt
+          {% elif t < 19 %}kalt
+          {% elif t > 25 %}warm
+          {% elif h < 35 %}trocken
+          {% elif h > 60 %}feucht
+          {% else %}gut{% endif %}
+
+  # ---------- forecast today (every 15 min) ----------
+  - triggers:
+      - trigger: time_pattern
+        minutes: "/15"
+      - trigger: homeassistant
+        event: start
+      - trigger: event
+        event_type: event_template_reloaded
+    actions:
+      - action: weather.get_forecasts
+        target:
+          entity_id: weather.home
+        data:
+          type: daily
+        response_variable: wf
+    sensor:
+      # state = HA weather condition (sunny, rainy …); attributes for the display
+      - name: "WS Forecast"
+        unique_id: ws_forecast
+        icon: mdi:weather-partly-cloudy
+        state: "{{ ((wf['weather.home'].forecast | default([{}]))[0]).get('condition', 'unbekannt') }}"
+        attributes:
+          text: >
+            {% set c = ((wf['weather.home'].forecast | default([{}]))[0]).get('condition', '') %}
+            {{ {'sunny':'sonnig', 'clear-night':'klar', 'partlycloudy':'teils bewölkt',
+                'cloudy':'bewölkt', 'rainy':'Regen', 'pouring':'Starkregen',
+                'snowy':'Schnee', 'snowy-rainy':'Schneeregen', 'fog':'Nebel',
+                'hail':'Hagel', 'lightning':'Gewitter', 'lightning-rainy':'Gewitter',
+                'windy':'windig', 'windy-variant':'windig', 'exceptional':'Unwetter'}.get(c, '') }}
+          symbol: >
+            {% set c = ((wf['weather.home'].forecast | default([{}]))[0]).get('condition', '') %}
+            {{ {'sunny':'weather-sunny', 'clear-night':'weather-night',
+                'partlycloudy':'weather-partly-cloudy', 'cloudy':'weather-cloudy',
+                'rainy':'weather-rainy', 'pouring':'weather-pouring',
+                'snowy':'weather-snowy', 'snowy-rainy':'weather-snowy-rainy',
+                'fog':'weather-fog', 'hail':'weather-hail',
+                'lightning':'weather-lightning', 'lightning-rainy':'weather-lightning-rainy',
+                'windy':'weather-windy', 'windy-variant':'weather-windy',
+                'exceptional':'alert'}.get(c, 'weather-partly-cloudy') }}
+          temp_max: "{{ ((wf['weather.home'].forecast | default([{}]))[0]).get('temperature') }}"
+          temp_min: "{{ ((wf['weather.home'].forecast | default([{}]))[0]).get('templow') }}"
+          rain: >
+            {% set f = (wf['weather.home'].forecast | default([{}]))[0] %}
+            {% set p = f.get('precipitation_probability') %}
+            {% set mm = f.get('precipitation') %}
+            {% if p is not none %}{{ p | int }} %
+            {% elif mm is not none and mm | float(0) < 0.1 %}kein Regen
+            {% elif mm is not none %}{{ '%.1f' | format(mm | float) | replace('.', ',') }} mm{% endif %}
+
+  # ---------- sun (HH:MM text, local time) ----------
+  - sensor:
+      - name: "WS Sunrise"
+        unique_id: ws_sunrise
+        icon: mdi:weather-sunset-up
+        state: >
+          {% set t = state_attr('sun.sun', 'next_rising') %}
+          {{ as_local(as_datetime(t)).strftime('%H:%M') if t else '' }}
+      - name: "WS Sunset"
+        unique_id: ws_sunset
+        icon: mdi:weather-sunset-down
+        state: >
+          {% set t = state_attr('sun.sun', 'next_setting') %}
+          {{ as_local(as_datetime(t)).strftime('%H:%M') if t else '' }}

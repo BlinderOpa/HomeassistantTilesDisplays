@@ -1,0 +1,56 @@
+blueprint:
+  name: "Wall tiles: PV surplus"
+  description: >
+    Green tile while PV production minus house consumption is above a threshold
+    (with hysteresis, so it doesn't flicker). Optional home-battery level in the detail line.
+  domain: template
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/template/wall_tiles/tile_pv_surplus.yaml
+  input:
+    production_entity:
+      name: PV production (W)
+      selector: {entity: {domain: sensor, device_class: power}}
+    consumption_entity:
+      name: House consumption (W)
+      selector: {entity: {domain: sensor, device_class: power}}
+    battery_entity:
+      name: Home battery level % (optional)
+      default: ""
+      selector: {entity: {domain: sensor}}
+    show_from:
+      name: Show from (W)
+      default: 1000
+      selector: {number: {min: 100, max: 10000, step: 100, unit_of_measurement: W}}
+    hide_below:
+      name: Hide below (W)
+      default: 700
+      selector: {number: {min: 0, max: 10000, step: 100, unit_of_measurement: W}}
+    prio:
+      name: Priority
+      default: 36
+      selector: {number: {min: 0, max: 99}}
+
+variables:
+  prod_e: !input production_entity
+  cons_e: !input consumption_entity
+  bat_e: !input battery_entity
+  on_w: !input show_from
+  off_w: !input hide_below
+  prio_: !input prio
+
+sensor:
+  icon: mdi:solar-power
+  state: >
+    {% set u = states(prod_e) | float(0) - states(cons_e) | float(0) %}
+    {% set was_on = this.state is defined and this.state not in ['hidden', 'unknown', 'unavailable'] %}
+    {{ 'ok' if u >= on_w | float or (was_on and u >= off_w | float) else 'hidden' }}
+  attributes:
+    prio: "{{ prio_ | int }}"
+    title: "PV-Überschuss"
+    value: >
+      {% set u = states(prod_e) | float(0) - states(cons_e) | float(0) %}
+      {{ ('%.1f' | format(u / 1000)) | replace('.', ',') }} kW
+    detail: >
+      {% set b = states(bat_e) | float(none) if bat_e else none %}
+      {{ 'Akku ' ~ (b | int) ~ ' %' if b is not none else '' }}
+    progress: -1
+    tap: "none"

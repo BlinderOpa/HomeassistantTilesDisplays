@@ -1,0 +1,66 @@
+blueprint:
+  name: "Wall tiles: alarm tile for a binary sensor"
+  description: >
+    A tile that is only visible while a binary sensor is on (leak, fault, door open …).
+    Name the entity "Tile <something>" and give it the label "Display" in the UI.
+  domain: template
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/template/wall_tiles/tile_binary_alarm.yaml
+  input:
+    sensor_entity:
+      name: Binary sensor
+      selector:
+        entity:
+          domain: binary_sensor
+    status:
+      name: Status / colour while on
+      default: alarm
+      selector:
+        select:
+          options: [alarm, warn, info, ok]
+    title:
+      name: Title
+      default: "Alarm"
+      selector:
+        text:
+    value:
+      name: Value text
+      default: ""
+      selector:
+        text:
+    detail:
+      name: Detail text
+      default: ""
+      selector:
+        text:
+    prio:
+      name: Priority (0–9 alarm, 10–19 warning)
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 99
+    icon:
+      name: Icon
+      default: "mdi:alert"
+      selector:
+        icon:
+
+variables:
+  bs: !input sensor_entity
+  status_: !input status
+  title_: !input title
+  value_: !input value
+  detail_: !input detail
+  prio_: !input prio
+  icon_: !input icon
+
+sensor:
+  icon: "{{ icon_ }}"
+  state: "{{ status_ if is_state(bs, 'on') else 'hidden' }}"
+  attributes:
+    prio: "{{ prio_ | int }}"
+    title: "{{ title_ }}"
+    value: "{{ value_ }}"
+    detail: "{{ detail_ }}"
+    progress: -1
+    tap: "none"

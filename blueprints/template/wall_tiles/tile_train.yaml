@@ -1,0 +1,69 @@
+blueprint:
+  name: "Wall tiles: train delay"
+  description: >
+    Tile for the morning commute, based on the helper sensor from the blueprint "next train".
+    Visible on workdays in a time window. Colours like Deutsche Bahn: up to 5 min counts as
+    on time (green, minutes still shown), 6–14 min orange, from 15 min or cancelled red.
+  domain: template
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/template/wall_tiles/tile_train.yaml
+  input:
+    train_entity:
+      name: Next-train helper sensor
+      default: sensor.train_next
+      selector: {entity: {domain: sensor}}
+    holiday_entity:
+      name: Public holiday (binary sensor, optional)
+      default: ""
+      selector: {entity: {domain: binary_sensor}}
+    workday_entity:
+      name: Workday sensor (optional, replaces Mon–Fri + holiday)
+      default: ""
+      selector: {entity: {domain: binary_sensor}}
+    hour_from:
+      name: Visible from (hour)
+      default: 6
+      selector: {number: {min: 0, max: 23}}
+    hour_to:
+      name: Visible until (hour, exclusive)
+      default: 8
+      selector: {number: {min: 1, max: 24}}
+    prio:
+      name: Priority
+      default: 20
+      selector: {number: {min: 0, max: 99}}
+
+variables:
+  tr: !input train_entity
+  hol: !input holiday_entity
+  wd: !input workday_entity
+  h_from: !input hour_from
+  h_to: !input hour_to
+  prio_: !input prio
+
+sensor:
+  icon: mdi:train
+  state: >
+    {% set workday = is_state(wd, 'on') if wd else (now().isoweekday() <= 5 and not (hol and is_state(hol, 'on'))) %}
+    {% set window = h_from | int <= now().hour < h_to | int %}
+    {% set v = states(tr) %}
+    {% if not (workday and window) or not v | is_number %}hidden
+    {% elif state_attr(tr, 'cancelled') or v | int >= 15 %}alarm
+    {% elif v | int >= 6 %}warn
+    {% else %}ok{% endif %}
+  attributes:
+    prio: "{{ prio_ | int }}"
+    title: "Zug {{ state_attr(tr, 'departure_plan') }}"
+    value: >
+      {% set v = states(tr) | int(0) %}
+      {% if state_attr(tr, 'cancelled') %}fällt aus
+      {% elif v >= 1 %}+{{ v }} min
+      {% else %}pünktlich{% endif %}
+    detail: >
+      {% set v = states(tr) | int(0) %}
+      {% set g = state_attr(tr, 'platform') %}
+      {% set t = [] %}
+      {% if v >= 1 %}{% set t = t + ['ab ' ~ state_attr(tr, 'departure_real')] %}{% endif %}
+      {% if g %}{% set t = t + ['Gleis ' ~ g] %}{% endif %}
+      {{ t | join(' · ') }}
+    progress: -1
+    tap: "none"

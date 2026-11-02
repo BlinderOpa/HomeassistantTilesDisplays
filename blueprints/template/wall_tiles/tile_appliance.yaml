@@ -1,0 +1,77 @@
+blueprint:
+  name: "Wall tiles: running appliance with progress"
+  description: >
+    A tile that is visible while an appliance runs (dishwasher, dryer, washer …)
+    and shows the time left and a progress bar.
+    Name the entity "Tile <something>" and give it the label "Display" in the UI.
+  domain: template
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/template/wall_tiles/tile_appliance.yaml
+  input:
+    running_entity:
+      name: Running (binary sensor, or any entity whose state is "on" while running)
+      selector:
+        entity:
+    remaining_entity:
+      name: Remaining time in minutes (optional)
+      default: ""
+      selector:
+        entity:
+          domain: sensor
+    progress_entity:
+      name: Progress in % (optional)
+      default: ""
+      selector:
+        entity:
+          domain: sensor
+    program_entity:
+      name: Program / phase text (optional)
+      default: ""
+      selector:
+        entity:
+          domain: sensor
+    title:
+      name: Title
+      default: "Spülmaschine"
+      selector:
+        text:
+    prio:
+      name: Priority
+      default: 30
+      selector:
+        number:
+          min: 0
+          max: 99
+    icon:
+      name: Icon
+      default: "mdi:progress-clock"
+      selector:
+        icon:
+
+variables:
+  run: !input running_entity
+  rem: !input remaining_entity
+  prog: !input progress_entity
+  pgm: !input program_entity
+  title_: !input title
+  prio_: !input prio
+  icon_: !input icon
+
+sensor:
+  icon: "{{ icon_ }}"
+  state: "{{ 'info' if is_state(run, 'on') else 'hidden' }}"
+  attributes:
+    prio: "{{ prio_ | int }}"
+    title: "{{ title_ }}"
+    value: >
+      {% set r = states(rem) if rem else '' %}
+      {% if r | is_number %}
+        {% set m = r | float | round(0) | int %}
+        {% if m >= 60 %}noch {{ m // 60 }}:{{ '%02d' | format(m % 60) }}{% else %}noch {{ m }} min{% endif %}
+      {% else %}läuft{% endif %}
+    detail: >
+      {% set p = states(pgm) if pgm else '' %}
+      {{ '' if p in ['unknown', 'unavailable', 'off', '', 'none'] else p }}
+    progress: >
+      {% set p = states(prog) if prog else '' %}
+      {{ p | float | round(0) | int if p | is_number else -1 }}
+    tap: "none"

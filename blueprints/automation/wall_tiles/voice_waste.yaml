@@ -1,0 +1,97 @@
+blueprint:
+  name: "Wall tiles voice: which bin is next?"
+  description: >
+    Voice command: which waste bin is collected next (or tomorrow), from a collection calendar
+    (e.g. HACS "Waste Collection Schedule"). Looks 21 days ahead.
+  domain: automation
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/automation/wall_tiles/voice_waste.yaml
+  input:
+    calendar_entity:
+      name: Waste collection calendar
+      selector:
+        entity:
+          domain: calendar
+    sentences_next:
+      name: Sentences – next collection
+      default:
+        - "Müll"
+        - "Müllabfuhr"
+        - "Welcher Müll kommt [als nächstes]"
+        - "Welche Tonne kommt [als nächstes]"
+        - "Welche Tonne muss raus"
+        - "Wann ist [die nächste] Müllabfuhr"
+      selector:
+        text:
+          multiple: true
+    sentences_tomorrow:
+      name: Sentences – tomorrow?
+      default:
+        - "Muss morgen [eine] Tonne raus"
+        - "Welche Tonne kommt morgen"
+        - "Kommt morgen [der] Müll"
+      selector:
+        text:
+          multiple: true
+
+mode: parallel
+
+triggers:
+  - trigger: conversation
+    id: next
+    command: !input sentences_next
+  - trigger: conversation
+    id: tomorrow
+    command: !input sentences_tomorrow
+
+variables:
+  cal_e: !input calendar_entity
+
+actions:
+  - action: calendar.get_events
+    target:
+      entity_id: "{{ cal_e }}"
+    data:
+      duration:
+        days: 21
+    response_variable: ev
+  - variables:
+      dates: >
+        {% set ns = namespace(l=[]) %}
+        {% for e in ev[cal_e].events | default([]) %}
+          {% set ns.l = ns.l + [{'d': (e.start | string)[:10], 'what': e.summary | trim}] %}
+        {% endfor %}
+        {{ ns.l | sort(attribute='d') }}
+      day: "{{ (dates | first).d if dates | count > 0 else '' }}"
+      kinds: "{{ dates | selectattr('d', 'eq', day) | map(attribute='what') | unique | list }}"
+      short: "{{ kinds | map('replace', 'tonne', '') | map('trim') | unique | list }}"
+      days_ahead: "{{ (strptime(day, '%Y-%m-%d').date() - now().date()).days if day else -1 }}"
+      weekday: >
+        {{ ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag']
+           [strptime(day, '%Y-%m-%d').weekday()] if day else '' }}
+      when: >
+        {% if days_ahead == 0 %}heute
+        {% elif days_ahead == 1 %}morgen
+        {% elif days_ahead == 2 %}übermorgen
+        {% elif days_ahead < 7 %}am {{ weekday }}
+        {% else %}in {{ days_ahead }} Tagen am {{ weekday }}{% endif %}
+      spoken: >
+        {% if kinds | count > 1 %}{{ kinds[:-1] | join(', ') }} und {{ kinds[-1] }}
+        {% else %}{{ kinds | join('') }}{% endif %}
+  - action: script.display_answer
+    continue_on_error: true
+    data:
+      target: "{{ trigger.device_id }}"
+      title: "Müll"
+      value: >
+        {% if not day %}keine Termine
+        {% elif days_ahead <= 2 %}{{ when }}
+        {% else %}{{ weekday[:2] }} {{ strptime(day, '%Y-%m-%d').day }}.{{ strptime(day, '%Y-%m-%d').month }}.{% endif %}
+      detail: "{{ short | join(', ') }}"
+      status: "{{ 'warn' if day and days_ahead <= 1 else 'info' }}"
+      icon: trash-can
+  - set_conversation_response: >
+      {% if not day %}Ich finde in den nächsten drei Wochen keine Abfuhr.
+      {% elif trigger.id == 'tomorrow' and days_ahead == 1 %}Ja, morgen wird abgeholt: {{ spoken }}.
+      {% elif trigger.id == 'tomorrow' and days_ahead == 0 %}Heute wird abgeholt: {{ spoken }}. Morgen nicht.
+      {% elif trigger.id == 'tomorrow' %}Nein, morgen nicht. Als Nächstes {{ when }}: {{ spoken }}.
+      {% else %}{{ when[:1] | upper ~ when[1:] }} wird abgeholt: {{ spoken }}.{% endif %}

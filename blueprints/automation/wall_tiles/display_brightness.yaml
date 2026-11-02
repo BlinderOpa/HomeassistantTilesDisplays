@@ -1,0 +1,78 @@
+blueprint:
+  name: "Wall tiles: display brightness by time of day"
+  description: >
+    Sets a display's brightness: bright during the day, dimmed after sunset, dark at night.
+    Runs at sunrise/sunset, at the night start/end times, on HA start and when the
+    device reports esphome.display_ready.
+  domain: automation
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/automation/wall_tiles/display_brightness.yaml
+  input:
+    brightness_entity:
+      name: Brightness (number entity of the display)
+      selector:
+        entity:
+          domain: number
+    node_name:
+      name: ESPHome node name (for the ready event)
+      default: "wall-display"
+      selector:
+        text:
+    day:
+      name: Day brightness
+      default: 80
+      selector: {number: {min: 0, max: 100}}
+    evening:
+      name: Evening brightness (after sunset)
+      default: 40
+      selector: {number: {min: 0, max: 100}}
+    night:
+      name: Night brightness
+      default: 10
+      selector: {number: {min: 0, max: 100}}
+    night_start:
+      name: Night starts
+      default: "22:00:00"
+      selector: {time: {}}
+    night_end:
+      name: Night ends
+      default: "06:00:00"
+      selector: {time: {}}
+
+mode: restart
+
+triggers:
+  - trigger: sun
+    event: sunrise
+  - trigger: sun
+    event: sunset
+  - trigger: time
+    at: !input night_start
+  - trigger: time
+    at: !input night_end
+  - trigger: homeassistant
+    event: start
+  - trigger: event
+    event_type: esphome.display_ready
+    event_data:
+      device: !input node_name
+
+variables:
+  ent: !input brightness_entity
+  day_: !input day
+  evening_: !input evening
+  night_: !input night
+  ns_: !input night_start
+  ne_: !input night_end
+  value: >
+    {% set t = now().strftime('%H:%M:%S') %}
+    {% set is_night = (t >= ns_ or t < ne_) if ns_ > ne_ else (ns_ <= t < ne_) %}
+    {% if is_night %}{{ night_ }}
+    {% elif is_state('sun.sun', 'above_horizon') %}{{ day_ }}
+    {% else %}{{ evening_ }}{% endif %}
+
+actions:
+  - action: number.set_value
+    target:
+      entity_id: "{{ ent }}"
+    data:
+      value: "{{ value }}"

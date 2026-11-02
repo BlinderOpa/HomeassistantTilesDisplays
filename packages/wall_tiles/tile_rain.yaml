@@ -1,0 +1,77 @@
+# Tile: rain is coming
+#   Visible 6–22 h while it is NOT raining but rain is expected within the next 2 hours.
+#   An hour counts as wet from 0.2 mm or 50 % probability.
+#   Source: hourly forecast of the weather entity, polled every 10 min.
+#
+# ── ADAPT ──────────────────────────────────────────────────────────────
+#   weather.home   your weather entity with hourly forecast (e.g. Met.no), search & replace
+template:
+  - triggers:
+      - trigger: time_pattern
+        minutes: "/10"
+      - trigger: homeassistant
+        event: start
+      - trigger: event
+        event_type: event_template_reloaded
+    actions:
+      - action: weather.get_forecasts
+        target:
+          entity_id: weather.home
+        data:
+          type: hourly
+        response_variable: wh
+    sensor:
+      - name: "Rain Soon"
+        unique_id: rain_soon
+        icon: mdi:weather-rainy
+        # state: minutes until rain starts (0 = current hour), -1 = no rain within 2 h
+        state: >
+          {% set ns = namespace(m=-1) %}
+          {% for f in wh['weather.home'].forecast | default([]) %}
+            {% set t = as_local(as_datetime(f.datetime)) %}
+            {% set wet = (f.get('precipitation') | float(0)) >= 0.2 or (f.get('precipitation_probability') | int(0)) >= 50 %}
+            {% if ns.m == -1 and wet and t + timedelta(hours=1) > now() and t <= now() + timedelta(hours=2) %}
+              {% set ns.m = [((t - now()).total_seconds() / 60) | int, 0] | max %}
+            {% endif %}
+          {% endfor %}
+          {{ ns.m }}
+        attributes:
+          start: >
+            {% set ns = namespace(t='') %}
+            {% for f in wh['weather.home'].forecast | default([]) %}
+              {% set t = as_local(as_datetime(f.datetime)) %}
+              {% set wet = (f.get('precipitation') | float(0)) >= 0.2 or (f.get('precipitation_probability') | int(0)) >= 50 %}
+              {% if ns.t == '' and wet and t + timedelta(hours=1) > now() and t <= now() + timedelta(hours=2) %}
+                {% set ns.t = t.strftime('%H:%M') %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.t }}
+          mm: >
+            {% set ns = namespace(s=0) %}
+            {% for f in wh['weather.home'].forecast | default([]) %}
+              {% set t = as_local(as_datetime(f.datetime)) %}
+              {% if t + timedelta(hours=1) > now() and t <= now() + timedelta(hours=3) %}
+                {% set ns.s = ns.s + (f.get('precipitation') | float(0)) %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.s | round(1) }}
+
+  - sensor:
+      - name: "Tile Rain"
+        unique_id: tile_rain
+        icon: mdi:weather-rainy
+        state: >
+          {% set m = states('sensor.rain_soon') | int(-1) %}
+          {% set raining = states('weather.home') in ['rainy', 'pouring', 'lightning-rainy', 'snowy-rainy', 'hail'] %}
+          {{ 'warn' if 6 <= now().hour < 22 and m >= 0 and not raining else 'hidden' }}
+        attributes:
+          prio: 22
+          title: "Regen kommt"
+          value: >
+            {% set m = states('sensor.rain_soon') | int(-1) %}
+            {{ 'gleich' if m <= 10 else 'ab ' ~ state_attr('sensor.rain_soon', 'start') }}
+          detail: >
+            {% set mm = state_attr('sensor.rain_soon', 'mm') | float(0) %}
+            {{ ('ca. ' ~ (mm | string | replace('.', ',')) ~ ' mm · ' if mm >= 0.5 else '') ~ 'Wäsche/Fenster?' }}
+          progress: -1
+          tap: "none"

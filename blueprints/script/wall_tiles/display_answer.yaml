@@ -1,0 +1,82 @@
+blueprint:
+  name: "Wall tiles: show answer on displays"
+  description: >
+    Central script that shows a one-off answer (after a voice command or as a notification)
+    on the right ESPHome device via its API action "show_answer".
+
+    Create a script from this blueprint with the entity id **script.display_answer**
+    (the packages and voice blueprints call it by that name).
+
+    Field "target": a device id (e.g. trigger.device_id of a conversation trigger),
+    "wall" (the wall display) or "all".
+  domain: script
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/script/wall_tiles/display_answer.yaml
+  input:
+    devices:
+      name: Devices
+      description: >
+        Mapping "ESPHome node name: one entity of that device". The entity is only used
+        to find the device id. Example:
+          wall-display: number.wall_display_brightness
+          voice-satellite-1: select.voice_satellite_1_assistant
+      selector:
+        object:
+    wall_node:
+      name: Node name of the wall display (target "wall")
+      default: "wall-display"
+      selector:
+        text:
+
+mode: parallel
+max: 10
+
+fields:
+  target:
+    description: "Device id (e.g. trigger.device_id), 'wall' or 'all'"
+    example: "all"
+  title:
+    example: "Zug 06:42"
+  value:
+    example: "+7 min"
+  detail:
+    example: "Bahnhof A → Bahnhof B"
+  status:
+    description: "alarm | warn | ok | info | on | off"
+    example: "warn"
+  icon:
+    description: "MDI name without mdi:"
+    example: "train"
+  duration:
+    description: "seconds, 0 = device default"
+    example: 0
+
+variables:
+  devices_: !input devices
+  wall_: !input wall_node
+  nodes: >
+    {% set z = target | default('') %}
+    {% if z == 'all' %}
+      {{ devices_.keys() | list }}
+    {% elif z == 'wall' %}
+      {{ [wall_] }}
+    {% else %}
+      {% set ns = namespace(n=[]) %}
+      {% for node, ent in devices_.items() if device_id(ent) == z %}
+        {% set ns.n = ns.n + [node] %}
+      {% endfor %}
+      {{ ns.n }}
+    {% endif %}
+
+sequence:
+  - repeat:
+      for_each: "{{ nodes }}"
+      sequence:
+        - action: "esphome.{{ repeat.item | replace('-', '_') }}_show_answer"
+          continue_on_error: true
+          data:
+            title: "{{ (title | default('') | string)[:16] }}"
+            value: "{{ (value | default('') | string)[:20] }}"
+            detail: "{{ (detail | default('') | string)[:40] }}"
+            status: "{{ status | default('info') }}"
+            icon: "{{ icon | default('information') }}"
+            duration: "{{ duration | default(0) | int(0) }}"

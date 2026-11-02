@@ -1,0 +1,84 @@
+blueprint:
+  name: "Wall tiles voice: is the battery full? (charging plug)"
+  description: >
+    Voice command for something that charges on a smart plug (e-bike, tool batteries …):
+    off / charging / full, judged by the plug's power.
+  domain: automation
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/automation/wall_tiles/voice_charging_plug.yaml
+  input:
+    sentences:
+      name: Sentences
+      default:
+        - "(Fahrrad | E-Bike)"
+        - "Ist das (Fahrrad | E-Bike) voll"
+        - "Lädt das (Fahrrad | E-Bike) [noch]"
+        - "Ist der (Fahrrad | E-Bike) Akku voll"
+      selector:
+        text:
+          multiple: true
+    name:
+      name: Spoken name (with article)
+      default: "Das E-Bike"
+      selector:
+        text:
+    title:
+      name: Display title
+      default: "E-Bike"
+      selector:
+        text:
+    icon:
+      name: Icon
+      default: "bicycle-electric"
+      selector:
+        text:
+    switch_entity:
+      name: Smart plug
+      selector:
+        entity:
+          domain: switch
+    power_entity:
+      name: Power sensor of the plug
+      selector:
+        entity:
+          domain: sensor
+          device_class: power
+    full_below:
+      name: "Full below (W)"
+      default: 5
+      selector:
+        number:
+          min: 0
+          max: 100
+          unit_of_measurement: W
+
+mode: parallel
+
+triggers:
+  - trigger: conversation
+    command: !input sentences
+
+variables:
+  name_: !input name
+  title_: !input title
+  icon_: !input icon
+  sw: !input switch_entity
+  pw: !input power_entity
+  limit: !input full_below
+  on_: "{{ is_state(sw, 'on') }}"
+  watt: "{{ states(pw) | float(0) | round(0) | int }}"
+  state_: "{{ 'off' if not on_ else ('charging' if watt >= limit | float else 'full') }}"
+
+actions:
+  - action: script.display_answer
+    continue_on_error: true
+    data:
+      target: "{{ trigger.device_id }}"
+      title: "{{ title_ }}"
+      value: "{{ {'off': 'aus', 'charging': 'lädt', 'full': 'voll'}[state_] }}"
+      detail: "{{ (watt ~ ' W') if state_ == 'charging' else '' }}"
+      status: "{{ {'off': 'off', 'charging': 'on', 'full': 'ok'}[state_] }}"
+      icon: "{{ icon_ }}"
+  - set_conversation_response: >
+      {% if state_ == 'off' %}{{ name_ }} lädt gerade nicht, die Steckdose ist aus.
+      {% elif state_ == 'charging' %}{{ name_ }} lädt noch, gerade mit {{ watt }} Watt.
+      {% else %}{{ name_ }} ist voll. Die Steckdose ist noch an.{% endif %}

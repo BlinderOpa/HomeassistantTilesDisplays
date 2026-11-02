@@ -1,0 +1,105 @@
+blueprint:
+  name: "Wall tiles voice: 3D printer status"
+  description: >
+    Voice command for a Moonraker/Klipper 3D printer: progress, time left, errors.
+    Tip: Speech-to-Phrase recognises "Drucker"/"Druck" better than "3D".
+  domain: automation
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/automation/wall_tiles/voice_3d_printer.yaml
+  input:
+    sentences:
+      name: Sentences
+      default:
+        - "Druck"
+        - "Drucker"
+        - "Wie weit ist der (Drucker | Druck)"
+        - "Wie lange (druckt der Drucker | braucht der Druck) [noch]"
+        - "(Ist | Wann ist) der Druck fertig"
+      selector:
+        text:
+          multiple: true
+    print_state:
+      name: Current print state (standby/printing/paused/complete/cancelled/error)
+      selector:
+        entity:
+          domain: sensor
+    printer_state:
+      name: Printer state (ready/startup/shutdown/error)
+      selector:
+        entity:
+          domain: sensor
+    progress:
+      name: Progress %
+      selector:
+        entity:
+          domain: sensor
+    time_left:
+      name: Print time left
+      selector:
+        entity:
+          domain: sensor
+    eta:
+      name: Print ETA (timestamp, optional)
+      default: ""
+      selector:
+        entity:
+          domain: sensor
+
+mode: parallel
+
+triggers:
+  - trigger: conversation
+    command: !input sentences
+
+variables:
+  ps: !input print_state
+  prs: !input printer_state
+  pg: !input progress
+  tl: !input time_left
+  et: !input eta
+  job: "{{ states(ps) }}"
+  error: "{{ job == 'error' or states(prs) in ['error', 'shutdown'] }}"
+  percent: >
+    {% set p = states(pg) %}
+    {{ p | float | round(0) | int if p | is_number else -1 }}
+  rest: >
+    {% set r = states(tl) %}
+    {% if r | is_number and r | float > 0 %}
+      {% set u = state_attr(tl, 'unit_of_measurement') | default('h', true) %}
+      {{ (r | float * {'s': 1/60, 'min': 1, 'h': 60, 'd': 1440}.get(u, 60)) | round(0) | int }}
+    {% else %}-1{% endif %}
+  end: >
+    {% set e = states(et) if et else '' %}
+    {% if e not in ['unknown', 'unavailable', ''] and as_datetime(e) is not none %}{{ as_local(as_datetime(e)).strftime('%H:%M') }}
+    {% elif rest > 0 %}{{ (now() + timedelta(minutes=rest)).strftime('%H:%M') }}{% endif %}
+  duration_s: >
+    {% set h = rest // 60 %}{% set m = rest % 60 %}
+    {% if rest >= 60 %}{{ h }} {{ 'Stunde' if h == 1 else 'Stunden' }}{{ (' und ' ~ m ~ (' Minute' if m == 1 else ' Minuten')) if m > 0 else '' }}
+    {% elif rest > 0 %}{{ rest }} {{ 'Minute' if rest == 1 else 'Minuten' }}{% endif %}
+  situation: >
+    {% if error %}error
+    {% elif job in ['printing', 'paused', 'complete', 'cancelled'] %}{{ job }}
+    {% else %}idle{% endif %}
+
+actions:
+  - action: script.display_answer
+    continue_on_error: true
+    data:
+      target: "{{ trigger.device_id }}"
+      title: "3D-Drucker"
+      value: >
+        {{ {'error': 'Fehler', 'paused': 'Pause', 'complete': 'fertig', 'cancelled': 'abgebr.',
+            'idle': 'aus'}.get(situation, (percent ~ ' %') if percent >= 0 else 'druckt') }}
+      detail: >
+        {% if situation == 'printing' %}
+          {{ [('noch ' ~ (rest // 60) ~ ':' ~ '%02d' | format(rest % 60) ~ ' h') if rest > 0 else '',
+              ('fertig ' ~ end) if end else ''] | select | join(' · ') }}
+        {% elif situation == 'paused' %}bei {{ percent }} %{% endif %}
+      status: "{{ {'error': 'alarm', 'printing': 'info', 'paused': 'warn', 'complete': 'ok', 'cancelled': 'warn'}.get(situation, 'off') }}"
+      icon: "{{ 'printer-3d-nozzle-alert' if situation == 'error' else 'printer-3d' }}"
+  - set_conversation_response: >
+      {% if situation == 'error' %}Der 3D-Drucker meldet einen Fehler. Bitte nachsehen.
+      {% elif situation == 'printing' %}Der Druck ist zu {{ percent }} Prozent fertig{% if rest > 0 %}, noch {{ duration_s }}{% endif %}{% if end %}, fertig gegen {{ end }} Uhr{% endif %}.
+      {% elif situation == 'paused' %}Der Druck ist pausiert, bei {{ percent }} Prozent.
+      {% elif situation == 'complete' %}Der Druck ist fertig.
+      {% elif situation == 'cancelled' %}Der letzte Druck wurde abgebrochen.
+      {% else %}Der 3D-Drucker druckt gerade nicht.{% endif %}

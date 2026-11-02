@@ -1,0 +1,129 @@
+blueprint:
+  name: "Wall tiles: rooms too humid"
+  description: >
+    Finds ALL humidity sensors that are assigned to an area – no list to maintain – and shows the
+    areas above their limit (default 60 %, areas whose name contains "bad"/"bath" 70 %).
+    Hysteresis: an area stays listed until it is 3 % below its limit.
+    The attribute "list" ([{room, value, h}]) can be used by other automations (e.g. ventilation).
+    Optional: tapping the tile runs a script (e.g. ventilation boost).
+  domain: template
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/template/wall_tiles/tile_room_humidity.yaml
+  input:
+    default_limit:
+      name: Default limit (%)
+      default: 60
+      selector: {number: {min: 30, max: 90, unit_of_measurement: "%"}}
+    bath_limit:
+      name: Limit for bathrooms (%)
+      default: 70
+      selector: {number: {min: 30, max: 95, unit_of_measurement: "%"}}
+    area_limits:
+      name: Limits per area (optional)
+      description: 'Mapping "area name: limit", e.g. Keller: 65'
+      default: {}
+      selector: {object: {}}
+    exclude:
+      name: Exclude sensors (outdoor, fridge, sauna …)
+      default: []
+      selector: {entity: {domain: sensor, multiple: true}}
+    exclude_areas:
+      name: Exclude areas (names, e.g. Keller, Garage)
+      default: []
+      selector: {text: {multiple: true}}
+    action_entity:
+      name: Run on tap (optional), e.g. a ventilation boost script
+      default: ""
+      selector: {entity: {domain: [script, scene, input_boolean]}}
+    active_entity:
+      name: '"Boost running" indicator (optional)'
+      description: e.g. the ventilation mode select; while it has the state below the detail says "Lüftung läuft hoch".
+      default: ""
+      selector: {entity: {}}
+    active_state:
+      name: State that means "boost running"
+      default: "override"
+      selector: {text: {}}
+    prio:
+      name: Priority
+      default: 16
+      selector: {number: {min: 0, max: 99}}
+
+variables:
+  lim_d: !input default_limit
+  lim_b: !input bath_limit
+  lim_a: !input area_limits
+  excl: !input exclude
+  excl_a: !input exclude_areas
+  act_e: !input action_entity
+  run_e: !input active_entity
+  run_s: !input active_state
+  prio_: !input prio
+
+sensor:
+  icon: mdi:water-percent-alert
+  state: >
+      {% set before = (this.attributes.get('list', []) | map(attribute='room') | list) if this is defined and this.attributes is defined else [] %}
+      {% set ns = namespace(l=[], seen=[]) %}
+      {% for s in states.sensor | selectattr('attributes.device_class', 'defined') | selectattr('attributes.device_class', 'eq', 'humidity')
+            if s.entity_id not in excl and s.state | is_number and area_name(s.entity_id) and area_name(s.entity_id) not in excl_a %}
+        {% set room = area_name(s.entity_id) %}
+        {% set g = (lim_a or {}).get(room, lim_b if ('bad' in room | lower or 'bath' in room | lower) else lim_d) | float %}
+        {% set h = s.state | float %}
+        {% if (h > g or (room in before and h > g - 3)) and room not in ns.seen %}
+          {% set ns.seen = ns.seen + [room] %}
+          {% set ns.l = ns.l + [{'room': room, 'value': (h | round(0) | int) ~ ' %', 'h': h}] %}
+        {% endif %}
+      {% endfor %}
+      {% set l = ns.l | sort(attribute='h', reverse=true) %}
+      {{ 'warn' if l else 'hidden' }}
+  attributes:
+    list: >
+      {% set before = (this.attributes.get('list', []) | map(attribute='room') | list) if this is defined and this.attributes is defined else [] %}
+      {% set ns = namespace(l=[], seen=[]) %}
+      {% for s in states.sensor | selectattr('attributes.device_class', 'defined') | selectattr('attributes.device_class', 'eq', 'humidity')
+            if s.entity_id not in excl and s.state | is_number and area_name(s.entity_id) and area_name(s.entity_id) not in excl_a %}
+        {% set room = area_name(s.entity_id) %}
+        {% set g = (lim_a or {}).get(room, lim_b if ('bad' in room | lower or 'bath' in room | lower) else lim_d) | float %}
+        {% set h = s.state | float %}
+        {% if (h > g or (room in before and h > g - 3)) and room not in ns.seen %}
+          {% set ns.seen = ns.seen + [room] %}
+          {% set ns.l = ns.l + [{'room': room, 'value': (h | round(0) | int) ~ ' %', 'h': h}] %}
+        {% endif %}
+      {% endfor %}
+      {% set l = ns.l | sort(attribute='h', reverse=true) %}
+      {{ l }}
+    value: >
+      {% set before = (this.attributes.get('list', []) | map(attribute='room') | list) if this is defined and this.attributes is defined else [] %}
+      {% set ns = namespace(l=[], seen=[]) %}
+      {% for s in states.sensor | selectattr('attributes.device_class', 'defined') | selectattr('attributes.device_class', 'eq', 'humidity')
+            if s.entity_id not in excl and s.state | is_number and area_name(s.entity_id) and area_name(s.entity_id) not in excl_a %}
+        {% set room = area_name(s.entity_id) %}
+        {% set g = (lim_a or {}).get(room, lim_b if ('bad' in room | lower or 'bath' in room | lower) else lim_d) | float %}
+        {% set h = s.state | float %}
+        {% if (h > g or (room in before and h > g - 3)) and room not in ns.seen %}
+          {% set ns.seen = ns.seen + [room] %}
+          {% set ns.l = ns.l + [{'room': room, 'value': (h | round(0) | int) ~ ' %', 'h': h}] %}
+        {% endif %}
+      {% endfor %}
+      {% set l = ns.l | sort(attribute='h', reverse=true) %}
+      {% if l | count == 1 %}{{ l[0].room }} {{ l[0].value }}{% elif l | count > 1 %}{{ l | count }} Räume{% endif %}
+    detail: >
+      {% set before = (this.attributes.get('list', []) | map(attribute='room') | list) if this is defined and this.attributes is defined else [] %}
+      {% set ns = namespace(l=[], seen=[]) %}
+      {% for s in states.sensor | selectattr('attributes.device_class', 'defined') | selectattr('attributes.device_class', 'eq', 'humidity')
+            if s.entity_id not in excl and s.state | is_number and area_name(s.entity_id) and area_name(s.entity_id) not in excl_a %}
+        {% set room = area_name(s.entity_id) %}
+        {% set g = (lim_a or {}).get(room, lim_b if ('bad' in room | lower or 'bath' in room | lower) else lim_d) | float %}
+        {% set h = s.state | float %}
+        {% if (h > g or (room in before and h > g - 3)) and room not in ns.seen %}
+          {% set ns.seen = ns.seen + [room] %}
+          {% set ns.l = ns.l + [{'room': room, 'value': (h | round(0) | int) ~ ' %', 'h': h}] %}
+        {% endif %}
+      {% endfor %}
+      {% set l = ns.l | sort(attribute='h', reverse=true) %}
+      {% if run_e and is_state(run_e, run_s) %}Lüftung läuft hoch{% elif l | count > 1 %}{% for x in l %}{{ x.room }} {{ x.value }}{{ ', ' if not loop.last }}{% endfor %}{% elif act_e %}Antippen = Lüftung hoch{% else %}lüften{% endif %}
+    prio: "{{ prio_ | int }}"
+    title: "Zu feucht"
+    progress: -1
+    tap: "{{ 'ack' if act_e else 'none' }}"
+    action: "{{ act_e }}"

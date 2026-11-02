@@ -1,0 +1,49 @@
+blueprint:
+  name: "Wall tiles: handle tile taps"
+  description: >
+    Reacts to the event esphome.display_tap that a display (or a voice command) sends
+    when a tile is tapped.
+
+    - tap "toggle" → toggles the entity in the tile attribute "entity"
+    - tap "ack"    → runs the entity in the tile attribute "action" with homeassistant.turn_on
+                     (script, scene, input_boolean …)
+
+    The mapping tile → entity lives only in the tile sensor, never on the device.
+    Create this automation ONCE; it serves all displays.
+    ESPHome devices need "Allow the device to perform Home Assistant actions" enabled.
+  domain: automation
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/automation/wall_tiles/tile_tap_handler.yaml
+  input:
+    tile_prefix:
+      name: Tile entity prefix
+      description: Must match the prefix used by the collector.
+      default: "sensor.tile_"
+      selector:
+        text:
+
+mode: queued
+max: 10
+
+triggers:
+  - trigger: event
+    event_type: esphome.display_tap
+
+variables:
+  prefix: !input tile_prefix
+  tile: "{{ prefix ~ trigger.event.data.id }}"
+  tap: "{{ trigger.event.data.tap }}"
+  target_entity: "{{ state_attr(tile, 'entity') }}"
+  target_action: "{{ state_attr(tile, 'action') }}"
+
+actions:
+  - choose:
+      - conditions: "{{ tap == 'toggle' and target_entity not in [none, ''] }}"
+        sequence:
+          - action: homeassistant.toggle
+            target:
+              entity_id: "{{ target_entity }}"
+      - conditions: "{{ tap == 'ack' and target_action not in [none, ''] }}"
+        sequence:
+          - action: homeassistant.turn_on
+            target:
+              entity_id: "{{ target_action }}"

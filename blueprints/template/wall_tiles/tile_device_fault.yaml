@@ -1,0 +1,80 @@
+blueprint:
+  name: "Wall tiles: device fault / warning"
+  description: >
+    Tile for a device that reports faults (heat pump, ventilation unit, inverter …):
+    red while the fault sensor is on, orange while the optional warning sensor is on.
+    Optional text entities fill value and detail (error code, status line, alarm list).
+  domain: template
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/template/wall_tiles/tile_device_fault.yaml
+  input:
+    fault_entity:
+      name: Fault (binary sensor)
+      selector: {entity: {domain: binary_sensor}}
+    warning_entity:
+      name: Warning (binary sensor, optional)
+      default: ""
+      selector: {entity: {domain: binary_sensor}}
+    value_entity:
+      name: Error code / reason (optional)
+      description: Shown after "Störung" / "Fehler".
+      default: ""
+      selector: {entity: {}}
+    detail_entity:
+      name: Detail text, e.g. status line or active alarms (optional)
+      default: ""
+      selector: {entity: {}}
+    detail_prefix:
+      name: Prefix for the detail text
+      default: ""
+      selector: {text: {}}
+    title:
+      name: Title
+      default: "Wärmepumpe"
+      selector: {text: {}}
+    fault_word:
+      name: Word for a fault
+      default: "Störung"
+      selector: {text: {}}
+    prio_fault:
+      name: Priority on fault
+      default: 1
+      selector: {number: {min: 0, max: 99}}
+    prio_warning:
+      name: Priority on warning
+      default: 12
+      selector: {number: {min: 0, max: 99}}
+    icon:
+      name: Icon
+      default: "mdi:heat-pump"
+      selector: {icon: {}}
+
+variables:
+  fault_e: !input fault_entity
+  warn_e: !input warning_entity
+  value_e: !input value_entity
+  detail_e: !input detail_entity
+  detail_prefix: !input detail_prefix
+  title_: !input title
+  fault_word: !input fault_word
+  prio_f: !input prio_fault
+  prio_w: !input prio_warning
+  icon_: !input icon
+
+sensor:
+  icon: "{{ icon_ }}"
+  state: >
+    {% if is_state(fault_e, 'on') %}alarm
+    {% elif warn_e and is_state(warn_e, 'on') %}warn
+    {% else %}hidden{% endif %}
+  attributes:
+    prio: "{{ prio_f | int if is_state(fault_e, 'on') else prio_w | int }}"
+    title: "{{ title_ }}"
+    value: >
+      {% set c = states(value_e) if value_e else '' %}
+      {{ (fault_word if is_state(fault_e, 'on') else 'Warnung')
+         ~ (' ' ~ c if c not in ['unknown', 'unavailable', '', 'none'] else '') }}
+    detail: >
+      {% set s = states(detail_e) if detail_e else '' %}
+      {{ '' if s in ['unknown', 'unavailable', '', 'none'] else detail_prefix ~ s }}
+    progress: -1
+    tap: "none"
