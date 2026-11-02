@@ -1,0 +1,9 @@
+# Never commit real credentials or local build output
+secrets.yaml
+esphome/secrets.yaml
+.esphome/
+**/.esphome/
+__pycache__/
+
+# Local list of private terms used by tools/check_private.sh
+tools/private_terms.txt
