@@ -17,13 +17,14 @@ substitutions:
   # Override these in your own device file (see esphome/examples/), so the
   # device keeps its existing name and entity ids in Home Assistant.
   node_name: wall-display
-  friendly_name: ${friendly_name}
-  # Every device should have its own key. Default: secret "api_encryption_key".
-  api_key: !secret api_encryption_key
+  friendly_name: "Wall Display"
+  # REQUIRED in your device file (secrets can't be read from a remote package):
+  #   api_key, wifi_ssid, wifi_password, ap_password
+  #   e.g.  api_key: !secret my_device_api_key
 
 esphome:
   name: ${node_name}
-  friendly_name: "Wall Display"
+  friendly_name: ${friendly_name}
   min_version: 2025.5.0
   project:
     name: "Waveshare.ESP32-S3-touch-lcd-7"
@@ -304,11 +305,11 @@ ota:
     encryption:
 
 wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
+  ssid: ${wifi_ssid}
+  password: ${wifi_password}
   ap:
     ssid: "Wall Display Fallback"
-    password: !secret ap_password
+    password: ${ap_password}
 
 captive_portal:
 

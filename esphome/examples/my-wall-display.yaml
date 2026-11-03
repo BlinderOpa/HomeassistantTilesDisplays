@@ -5,6 +5,9 @@ substitutions:
   node_name: my-wall-display             # keep your existing node name → entity ids stay the same
   friendly_name: "My Wall Display"
   api_key: !secret wall_display_api_key       # one key per device in secrets.yaml
+  wifi_ssid: !secret wifi_ssid
+  wifi_password: !secret wifi_password
+  ap_password: !secret ap_password
 
 packages:
   wall_tiles:

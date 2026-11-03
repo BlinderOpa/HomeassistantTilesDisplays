@@ -34,9 +34,10 @@ substitutions:
   # Override these in your own device file (see esphome/examples/), so the
   # device keeps its existing name and entity ids in Home Assistant.
   node_name: voice-satellite-s3
-  friendly_name: ${friendly_name}
-  # Every device should have its own key. Default: secret "api_encryption_key".
-  api_key: !secret api_encryption_key
+  friendly_name: "Voice Satellite S3"
+  # REQUIRED in your device file (secrets can't be read from a remote package):
+  #   api_key, wifi_ssid, wifi_password
+  #   e.g.  api_key: !secret my_device_api_key
   # Schriftgröße für Status- und Sprechtext
   schrift_groesse: "16"
   # Standarddauer für show_answer (duration: 0), laut Schnittstelle 8 s
@@ -46,7 +47,7 @@ substitutions:
 
 esphome:
   name: ${node_name}
-  friendly_name: "Voice Satellite S3"
+  friendly_name: ${friendly_name}
   on_boot:
     # Wake-Word-Erkennung erst starten, wenn alles andere läuft
     - priority: -100
@@ -64,8 +65,8 @@ psram:
   speed: 80MHz
 
 wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
+  ssid: ${wifi_ssid}
+  password: ${wifi_password}
   on_connect:
     # WLAN steht, Home Assistant fehlt noch
     - lambda: 'id(status_text) = "Verbinde HA...";'
