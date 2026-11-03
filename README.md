@@ -43,6 +43,7 @@ blueprints/
     tile_tap_handler          tap on a tile → toggle / run action        (once)
     tiles_push                send tiles to one ESPHome display          (per display)
     display_brightness        day / evening / night brightness
+    weather_background        faded photo behind the base view, chosen by the current weather
     appliance_done_detect     sets the "done" flag of an appliance
     voice_ack_tile            "Müll ist draußen" = tap by voice
     voice_switch_tile         "E-Bike laden" / "E-Bike aus"
@@ -61,6 +62,7 @@ packages/                     only what needs fixed helpers or trigger-based tem
   wall_tiles/tile_school      WebUntis cancelled lessons
   voice/voice_shutters        shutters per room by voice, stop, tile "Rollo fährt"
   weather_station             sensor.ws_* for the 7" base view
+  weather_background          shell command that picks + prepares the background photo (ffmpeg)
 examples/my_wall_tiles.yaml   YOUR configuration: all blueprint calls in one package
 esphome/                      device firmware (ESPHome + LVGL) + examples/ for your device files
 docs/interface.md             the contract between HA and the devices

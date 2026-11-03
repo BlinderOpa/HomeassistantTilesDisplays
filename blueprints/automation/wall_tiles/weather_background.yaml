@@ -1,0 +1,107 @@
+blueprint:
+  name: "Wall tiles: weather background"
+  description: >
+    Shows a faded photo behind the 7" base view that matches the current weather:
+    a random file from the sub folder named like the weather condition (sunny, rainy …),
+    otherwise from "default". Needs the package weather_background.yaml (shell command).
+
+    Runs when the weather condition changes, every N minutes (new random photo),
+    on HA start and when the display reports esphome.display_ready.
+    The prepared image is written to /config/www/wall_display/<node>.jpg and the display
+    loads it from <base URL>/local/wall_display/<node>.jpg.
+    Note: files below /config/www are reachable without login.
+  domain: automation
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/automation/wall_tiles/weather_background.yaml
+  input:
+    node_name:
+      name: ESPHome node name
+      description: "As in the device YAML (esphome: name:), e.g. wall-display."
+      default: "wall-display"
+      selector:
+        text:
+    weather_entity:
+      name: Weather entity (its current condition picks the folder)
+      selector:
+        entity:
+          domain: weather
+    image_root:
+      name: Image folder
+      description: >
+        Folder with the sub folders default/, sunny/, rainy/ … as seen by Home Assistant,
+        e.g. /media/wall_backgrounds for a network storage named "wall_backgrounds".
+      default: "/media/wall_backgrounds"
+      selector:
+        text:
+    base_url:
+      name: Home Assistant URL for the display
+      description: >
+        How the display reaches Home Assistant, without trailing slash. An IP address is the
+        safest choice (e.g. http://<ip of HA>:8123); .local names may not resolve on the ESP.
+      default: "http://homeassistant.local:8123"
+      selector:
+        text:
+    brightness:
+      name: Image brightness (%)
+      description: Lower = fainter background, texts stay readable.
+      default: 35
+      selector: {number: {min: 10, max: 100, unit_of_measurement: "%"}}
+    interval:
+      name: New random photo every (minutes, 0 = only on weather change)
+      default: 30
+      selector: {number: {min: 0, max: 720, unit_of_measurement: min}}
+
+mode: single
+max_exceeded: silent
+
+triggers:
+  - trigger: state
+    entity_id: !input weather_entity
+    not_to: [unavailable, unknown]
+    id: weather
+  - trigger: time_pattern
+    minutes: "/5"
+    id: timer
+  - trigger: homeassistant
+    event: start
+    id: start
+  - trigger: event
+    event_type: esphome.display_ready
+    event_data:
+      device: !input node_name
+    id: ready
+
+variables:
+  node: !input node_name
+  weather_: !input weather_entity
+  root_: !input image_root
+  base_: !input base_url
+  bright_: !input brightness
+  interval_: !input interval
+  file_name: "{{ node | replace('/', '_') }}.jpg"
+
+conditions:
+  # the 5-minute timer only counts once the chosen interval has passed since the last run
+  - condition: template
+    value_template: >
+      {{ trigger.id != 'timer'
+         or (interval_ | int > 0
+             and (this.attributes.last_triggered is none
+                  or (now() - this.attributes.last_triggered).total_seconds() >= interval_ | int * 60 - 30)) }}
+
+actions:
+  - action: shell_command.wall_background
+    continue_on_error: true
+    response_variable: result
+    data:
+      root: "{{ root_ | trim | regex_replace('/+$', '') }}"
+      condition: "{{ states(weather_) }}"
+      out: "/config/www/wall_display/{{ file_name }}"
+      brightness: "{{ '%.2f' | format(bright_ | float(35) / 100) }}"
+  - action: "esphome.{{ node | replace('-', '_') }}_set_background"
+    continue_on_error: true   # display may be offline
+    data:
+      # cache buster: a new URL makes the display download the new photo
+      url: >
+        {% if result is defined and result.returncode | default(1) == 0 %}
+          {{ base_ | trim | regex_replace('/+$', '') }}/local/wall_display/{{ file_name }}?v={{ now().timestamp() | int }}
+        {% endif %}

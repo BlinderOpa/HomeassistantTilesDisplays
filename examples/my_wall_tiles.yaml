@@ -66,6 +66,17 @@ automation:
       path: wall_tiles/tiles_push.yaml
       input:
         node_name: my-wall-display
+  - id: wall_weather_background
+    alias: "Wall display: weather background"
+    use_blueprint:
+      path: wall_tiles/weather_background.yaml
+      input:
+        node_name: my-wall-display
+        weather_entity: weather.home
+        image_root: /media/wall_backgrounds     # network storage "wall_backgrounds" (usage: Media)
+        base_url: "http://homeassistant.local:8123"   # better: the IP address of HA
+        brightness: 35
+        interval: 30
   - id: wall_tiles_push_c6
     alias: "Wall tiles: push to voice satellite C6"
     use_blueprint:

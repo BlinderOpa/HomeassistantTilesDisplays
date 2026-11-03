@@ -1,4 +1,4 @@
-# Interface: Home Assistant ↔ displays (v1.6)
+# Interface: Home Assistant ↔ displays (v1.7)
 
 Applies to every device that shows tiles or answers. Reference devices:
 
@@ -161,6 +161,22 @@ Layout (800×480): outdoor top left · forecast top centre · indoor top right �
 bottom: sunrise/sunset, or up to 4 small tiles (+n) that open the 4×3 tile view.
 A tile with `status: alarm` additionally shows a big red banner.
 
+### 4.6 Action `set_background` (7")
+
+```yaml
+api:
+  actions:
+    - action: set_background
+      variables:
+        url: string   # baseline JPEG, 800×480, already darkened; "" = no background
+```
+
+The device downloads the image (`online_image`) and shows it unchanged behind the base view;
+panels are slightly transparent. HA picks and prepares the photo: blueprint
+`weather_background.yaml` + package `weather_background.yaml` (random file from
+`<root>/<weather condition>/`, else `<root>/default/`, scaled/cropped and darkened with ffmpeg,
+served from `/local/wall_display/<node>.jpg` with a cache-busting `?v=`).
+
 ## 5. What each device implements
 
 | | S3 | C6 | 7" |
@@ -171,6 +187,7 @@ A tile with `status: alarm` additionally shows a big red banner.
 | event `display_tap` | – | ✅ | ✅ |
 | event `display_ready` | optional | optional | ✅ |
 | weather-station base view | – | – | ✅ |
+| `set_background` | – | – | ✅ |
 
 ## Change rules
 

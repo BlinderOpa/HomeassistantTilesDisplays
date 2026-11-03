@@ -1,0 +1,46 @@
+# Weather background for the 7" display: picks a random photo matching the current weather
+# and prepares it for the display (800x480, darkened, baseline JPEG).
+# Used by the blueprint "Wall tiles: weather background" (blueprints/automation/wall_tiles/).
+#
+# ── ADAPT ──────────────────────────────────────────────────────────────
+#   Nothing here. Image folder, darkening and display are blueprint inputs.
+#
+# Image folder (e.g. on a NAS share, mounted via Settings → System → Storage →
+# "Add network storage", usage "Media" → appears as /media/<name>):
+#
+#   <root>/default/          used when the weather folder is missing or empty (required)
+#   <root>/sunny/            one sub folder per HA weather condition, all optional:
+#   <root>/clear-night/        sunny clear-night partlycloudy cloudy rainy pouring snowy
+#   <root>/rainy/ …            snowy-rainy fog hail lightning lightning-rainy windy
+#                              windy-variant exceptional
+#
+# Close variants fall back first: pouring → rainy, lightning-rainy → lightning → rainy,
+# snowy-rainy → snowy → rainy, windy-variant → windy; then default.
+# Files: .jpg .jpeg .png .webp (landscape works best; cropped to fill 800x480).
+#
+# Arguments: 1 root folder · 2 condition · 3 output file · 4 brightness factor (0.1–1.0)
+# Needs ffmpeg (included in Home Assistant OS / Container).
+shell_command:
+  wall_background: |-
+    sh -c '
+    root="$1"; cond="$2"; out="$3"; bright="$4";
+    case "$cond" in
+      pouring) chain="pouring rainy" ;;
+      lightning-rainy) chain="lightning-rainy lightning rainy" ;;
+      snowy-rainy) chain="snowy-rainy snowy rainy" ;;
+      windy-variant) chain="windy-variant windy" ;;
+      *) chain="$cond" ;;
+    esac;
+    pick="";
+    for d in $chain default; do
+      [ -d "$root/$d" ] || continue;
+      pick=$(find "$root/$d" -maxdepth 1 -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.webp" \) \
+             | awk "BEGIN{srand()} {a[NR]=\$0} END{if (NR) print a[int(rand()*NR)+1]}");
+      [ -n "$pick" ] && break;
+    done;
+    if [ -z "$pick" ]; then echo "no image found below $root" >&2; exit 1; fi;
+    mkdir -p "$(dirname "$out")";
+    ffmpeg -nostdin -loglevel error -y -i "$pick" \
+      -vf "scale=800:480:force_original_aspect_ratio=increase,crop=800:480,eq=saturation=0.7,format=rgb24,colorchannelmixer=rr=$bright:gg=$bright:bb=$bright" \
+      -frames:v 1 -q:v 4 -pix_fmt yuvj420p -f mjpeg "$out.tmp" && mv "$out.tmp" "$out" && echo "$pick"
+    ' wall_background "{{ root }}" "{{ condition }}" "{{ out }}" "{{ brightness }}"
