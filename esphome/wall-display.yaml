@@ -19,7 +19,7 @@ substitutions:
   node_name: wall-display
   friendly_name: "Wall Display"
   # REQUIRED in your device file (secrets can't be read from a remote package):
-  #   api_key, wifi_ssid, wifi_password, ap_password
+  #   api_key, wifi_ssid, wifi_password
   #   e.g.  api_key: !secret my_device_api_key
 
 esphome:
@@ -307,11 +307,9 @@ ota:
 wifi:
   ssid: ${wifi_ssid}
   password: ${wifi_password}
-  ap:
-    ssid: "Wall Display Fallback"
-    password: ${ap_password}
 
-captive_portal:
+# No fallback hotspot – (re)flash via USB if Wi-Fi is wrong.
+# To enable it: add  wifi: ap: {password: ...}  and  captive_portal:  in your device file.
 
 # ============================================================================
 # Hardware (unverändert)

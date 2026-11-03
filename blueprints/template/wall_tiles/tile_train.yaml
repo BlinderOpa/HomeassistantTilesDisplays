@@ -2,7 +2,8 @@ blueprint:
   name: "Wall tiles: train delay"
   description: >
     Tile for the morning commute, based on the helper sensor from the blueprint "next train".
-    Visible on workdays in a time window. Colours like Deutsche Bahn: up to 5 min counts as
+    Visible on chosen weekdays (or a workday sensor) in a time window, optionally paused by a switch.
+    A second instance (other time, other connection) works for the way home. Colours like Deutsche Bahn: up to 5 min counts as
     on time (green, minutes still shown), 6–14 min orange, from 15 min or cancelled red.
   domain: template
   source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/template/wall_tiles/tile_train.yaml
@@ -19,14 +20,33 @@ blueprint:
       name: Workday sensor (optional, replaces Mon–Fri + holiday)
       default: ""
       selector: {entity: {domain: binary_sensor}}
-    hour_from:
-      name: Visible from (hour)
-      default: 6
-      selector: {number: {min: 0, max: 23}}
-    hour_to:
-      name: Visible until (hour, exclusive)
-      default: 8
-      selector: {number: {min: 1, max: 24}}
+    time_from:
+      name: Visible from
+      default: "06:00:00"
+      selector: {time: {}}
+    time_to:
+      name: Visible until
+      default: "08:00:00"
+      selector: {time: {}}
+    weekdays:
+      name: Weekdays
+      description: Ignored when a workday sensor is set.
+      default: [mon, tue, wed, thu, fri]
+      selector:
+        select:
+          multiple: true
+          options:
+            - {value: mon, label: Montag}
+            - {value: tue, label: Dienstag}
+            - {value: wed, label: Mittwoch}
+            - {value: thu, label: Donnerstag}
+            - {value: fri, label: Freitag}
+            - {value: sat, label: Samstag}
+            - {value: sun, label: Sonntag}
+    pause_entity:
+      name: Pause switch (optional, e.g. input_boolean "Urlaub" – on = tile hidden)
+      default: ""
+      selector: {entity: {domain: [input_boolean, binary_sensor, switch]}}
     prio:
       name: Priority
       default: 20
@@ -36,17 +56,22 @@ variables:
   tr: !input train_entity
   hol: !input holiday_entity
   wd: !input workday_entity
-  h_from: !input hour_from
-  h_to: !input hour_to
+  t_from: !input time_from
+  t_to: !input time_to
+  days: !input weekdays
+  pause: !input pause_entity
   prio_: !input prio
 
 sensor:
   icon: mdi:train
   state: >
-    {% set workday = is_state(wd, 'on') if wd else (now().isoweekday() <= 5 and not (hol and is_state(hol, 'on'))) %}
-    {% set window = h_from | int <= now().hour < h_to | int %}
+    {% set day = ['mon','tue','wed','thu','fri','sat','sun'][now().weekday()] %}
+    {% set workday = is_state(wd, 'on') if wd else (day in days and not (hol and is_state(hol, 'on'))) %}
+    {% set n = now().strftime('%H:%M:%S') %}
+    {% set window = (t_from <= n < t_to) if t_from <= t_to else (n >= t_from or n < t_to) %}
+    {% set paused = pause != '' and is_state(pause, 'on') %}
     {% set v = states(tr) %}
-    {% if not (workday and window) or not v | is_number %}hidden
+    {% if paused or not (workday and window) or not v | is_number %}hidden
     {% elif state_attr(tr, 'cancelled') or v | int >= 15 %}alarm
     {% elif v | int >= 6 %}warn
     {% else %}ok{% endif %}
