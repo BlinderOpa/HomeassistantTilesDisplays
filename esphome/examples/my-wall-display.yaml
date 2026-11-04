@@ -12,9 +12,12 @@ packages:
   wall_tiles:
     url: https://github.com/BlinderOpa/HomeassistantTilesDisplays
     ref: main               # or a tag, e.g. v1.0.0, to update only when you choose
-    files: [esphome/wall-display.yaml]
+    files:
+      - esphome/wall-display.yaml
+      # - esphome/wall-display-calendar.yaml   # optional: week calendar page (needs HA package wall_calendar.yaml)
     refresh: 1d
 
 # Alternative without GitHub (local copy next to this file):
 # packages:
 #   wall_tiles: !include wall-display.yaml
+#   wall_calendar: !include wall-display-calendar.yaml   # optional

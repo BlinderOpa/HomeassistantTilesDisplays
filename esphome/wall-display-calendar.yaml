@@ -1,0 +1,219 @@
+# Part of ha-wall-tiles – https://github.com/BlinderOpa/HomeassistantTilesDisplays (MIT)
+# Comments in this file are German (original project language).
+# ============================================================================
+# Optionale Kalenderseite für das Wanddisplay 7" (Schnittstelle 4.7)
+#   Wird zusätzlich zu wall-display.yaml eingebunden (siehe esphome/examples/my-wall-display.yaml).
+#   Aktion:   set_calendar (fertige Texte von HA, Package packages/wall_calendar.yaml)
+#   Bedienung: auf der Wetterstation nach links wischen → Kalender (Woche ab heute)
+#              nach rechts wischen oder nach 60 s → zurück zur Wetterstation
+#   Solange HA keine Spalte geschickt hat, ist die Seite aus (Wischen tut nichts).
+# Schriften: übernommen von den Kachel-Labels (f14 für Zellen, f20b für Spaltenköpfe),
+#   dadurch keine zusätzlichen Fonts im Flash.
+# ============================================================================
+
+substitutions:
+  cal_home_page: page_wetter     # Seite, von der aus gewischt wird
+  cal_font_src: tile_0_detail    # Label, dessen Schrift die Zellen nutzen (f14)
+  cal_font_bold_src: tile_0_value  # Label, dessen Schrift die Köpfe nutzen (f20b)
+
+globals:
+  - id: cal_active
+    type: bool
+    restore_value: false
+    initial_value: "false"
+  - id: cal_gestures_set
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+lvgl:
+  pages:
+    - id: cal_page
+      skip: true                 # nicht per page.next/previous, nur per Wischen
+      bg_color: 0x000000
+      scrollable: false
+
+script:
+  - id: cal_show
+    mode: restart
+    then:
+      - lvgl.page.show:
+          id: cal_page
+          animation: MOVE_LEFT
+          time: 300ms
+      - delay: 60s
+      - lvgl.page.show:
+          id: ${cal_home_page}
+          animation: MOVE_RIGHT
+          time: 300ms
+
+  - id: cal_back
+    mode: single
+    then:
+      - script.stop: cal_show
+      - lvgl.page.show:
+          id: ${cal_home_page}
+          animation: MOVE_RIGHT
+          time: 300ms
+
+# Wischgesten einmalig nach dem Start registrieren (kein eigenes on_boot,
+# damit es sich nicht mit dem on_boot von wall-display.yaml beißt)
+interval:
+  - interval: 2s
+    then:
+      - lambda: |-
+          if (id(cal_gestures_set) || !id(boot_done)) return;
+          id(cal_gestures_set) = true;
+          #if LVGL_VERSION_MAJOR >= 9
+          #define CAL_INDEV() lv_indev_active()
+          #else
+          #define CAL_INDEV() lv_indev_get_act()
+          #endif
+          auto obj_of = [](auto &&p) -> lv_obj_t * {
+            if constexpr (std::is_pointer_v<std::decay_t<decltype(p)>>) return p->obj; else return p.obj;
+          };
+          lv_obj_t *home = obj_of(id(${cal_home_page}));
+          lv_obj_t *page = obj_of(id(cal_page));
+          // Gesten von allen Kind-Widgets der Wetterstation an die Seite weiterreichen
+          std::function<void(lv_obj_t *)> bubble;
+          bubble = [&](lv_obj_t *o) {
+            for (uint32_t i = 0; i < lv_obj_get_child_cnt(o); i++) {
+              lv_obj_t *c = lv_obj_get_child(o, i);
+              lv_obj_add_flag(c, LV_OBJ_FLAG_GESTURE_BUBBLE);
+              bubble(c);
+            }
+          };
+          bubble(home);
+          lv_obj_add_event_cb(home, [](lv_event_t *e) {
+            lv_indev_t *in = CAL_INDEV();
+            if (in == nullptr || !id(cal_active)) return;
+            if (lv_indev_get_gesture_dir(in) == LV_DIR_LEFT) id(cal_show).execute();
+          }, LV_EVENT_GESTURE, nullptr);
+          lv_obj_add_event_cb(page, [](lv_event_t *e) {
+            lv_indev_t *in = CAL_INDEV();
+            if (in == nullptr) return;
+            if (lv_indev_get_gesture_dir(in) == LV_DIR_RIGHT) id(cal_back).execute();
+          }, LV_EVENT_GESTURE, nullptr);
+
+api:
+  actions:
+    # JSON (Schnittstelle 4.7):
+    #   {"cols": [{"name": "...", "color": "#RRGGBB"}, ...],              max. 6
+    #    "days": [{"label": "Mi\n04.11.", "today": true, "weekend": false,
+    #              "cells": ["09:00 Termin\nTitel", "", ...]}, ...]}      7 Tage
+    - action: set_calendar
+      variables:
+        cal: string
+      then:
+        - lambda: |-
+            #if LVGL_VERSION_MAJOR >= 9
+            #define CAL_NOFLAG lv_obj_remove_flag
+            #else
+            #define CAL_NOFLAG lv_obj_clear_flag
+            #endif
+            #if LVGL_VERSION_MAJOR > 9 || (LVGL_VERSION_MAJOR == 9 && LVGL_VERSION_MINOR >= 3)
+            #define CAL_CLIP LV_LABEL_LONG_MODE_CLIP
+            #else
+            #define CAL_CLIP LV_LABEL_LONG_CLIP
+            #endif
+            auto obj_of = [](auto &&p) -> lv_obj_t * {
+              if constexpr (std::is_pointer_v<std::decay_t<decltype(p)>>) return p->obj; else return p.obj;
+            };
+            lv_obj_t *g = obj_of(id(cal_page));
+            const lv_font_t *f = lv_obj_get_style_text_font(id(${cal_font_src}), LV_PART_MAIN);
+            const lv_font_t *fb = lv_obj_get_style_text_font(id(${cal_font_bold_src}), LV_PART_MAIN);
+
+            const std::string s_cal(cal);
+            #if ARDUINOJSON_VERSION_MAJOR >= 7
+            JsonDocument doc;
+            #else
+            DynamicJsonDocument doc(16384);
+            #endif
+            DeserializationError err = deserializeJson(doc, s_cal);
+            if (err) {
+              ESP_LOGW("calendar", "set_calendar: JSON-Fehler: %s", err.c_str());
+              return;
+            }
+            JsonObject root = doc.as<JsonObject>();
+            {
+              lv_obj_clean(g);
+              JsonArray cols = root["cols"];
+              JsonArray days = root["days"];
+              int n = cols.isNull() ? 0 : std::min((int) cols.size(), 6);
+              id(cal_active) = n > 0;
+              if (n == 0) {                 // Kalender in HA abgeschaltet
+                if (lv_scr_act() == g) id(cal_back).execute();
+                return;
+              }
+
+              const int W = 800, H = 480;
+              const int DW = 64;            // Tagesspalte
+              const int HH = 34;            // Kopfzeile
+              const int CW = (W - DW) / n;  // je Spalte
+              const int RH = (H - HH) / 7;  // je Tag (63 px → 3 Zeilen à 14 px)
+              const int nd = days.isNull() ? 0 : std::min((int) days.size(), 7);
+
+              auto color = [](const char *s) -> uint32_t {
+                return (s != nullptr && s[0] == '#') ? strtoul(s + 1, nullptr, 16) : 0xFFFFFF;
+              };
+              auto label = [&](int x, int y, int w, int h, const char *txt,
+                               const lv_font_t *font, uint32_t col) {
+                lv_obj_t *l = lv_label_create(g);
+                lv_obj_set_pos(l, x, y);
+                lv_obj_set_size(l, w, h);
+                lv_label_set_long_mode(l, CAL_CLIP);
+                lv_obj_set_style_text_font(l, font, 0);
+                lv_obj_set_style_text_color(l, lv_color_hex(col), 0);
+                lv_label_set_text(l, txt != nullptr ? txt : "");
+                lv_obj_add_flag(l, LV_OBJ_FLAG_GESTURE_BUBBLE);
+                return l;
+              };
+              auto rect = [&](int x, int y, int w, int h, uint32_t col) {
+                lv_obj_t *o = lv_obj_create(g);
+                lv_obj_set_pos(o, x, y);
+                lv_obj_set_size(o, w, h);
+                lv_obj_set_style_bg_color(o, lv_color_hex(col), 0);
+                lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
+                lv_obj_set_style_border_width(o, 0, 0);
+                lv_obj_set_style_radius(o, 0, 0);
+                lv_obj_set_style_pad_all(o, 0, 0);
+                CAL_NOFLAG(o, LV_OBJ_FLAG_SCROLLABLE);
+                CAL_NOFLAG(o, LV_OBJ_FLAG_CLICKABLE);
+                lv_obj_add_flag(o, LV_OBJ_FLAG_GESTURE_BUBBLE);
+                return o;
+              };
+
+              // Zeilen: heute hervorgehoben, Wochenende leicht abgesetzt, Trennlinien
+              for (int r = 0; r < nd; r++) {
+                JsonObject d = days[r];
+                int y = HH + r * RH;
+                if (d["today"] | false) rect(0, y, W, RH, 0x1E3A4A);
+                else if (d["weekend"] | false) rect(0, y, W, RH, 0x161616);
+                rect(0, y + RH - 1, W, 1, 0x333333);
+              }
+              for (int c = 0; c < n; c++) rect(DW + c * CW, HH, 1, H - HH, 0x333333);
+
+              // Kopfzeile: Name in Spaltenfarbe + Farbbalken
+              for (int c = 0; c < n; c++) {
+                uint32_t col = color(cols[c]["color"] | "");
+                label(DW + c * CW + 6, 4, CW - 10, HH - 8, cols[c]["name"] | "", fb, col);
+                rect(DW + c * CW + 4, HH - 4, CW - 8, 3, col);
+              }
+
+              // Tage und Zellen
+              for (int r = 0; r < nd; r++) {
+                JsonObject d = days[r];
+                int y = HH + r * RH;
+                bool today = d["today"] | false;
+                bool we = d["weekend"] | false;
+                label(6, y + 5, DW - 10, RH - 8, d["label"] | "", f,
+                      today ? 0xFFFFFF : (we ? 0x8A8A8A : 0xB0B0B0));
+                JsonArray cells = d["cells"];
+                if (cells.isNull()) continue;
+                for (int c = 0; c < n && c < (int) cells.size(); c++) {
+                  const char *t = cells[c] | "";
+                  if (t[0] == '\0') continue;
+                  label(DW + c * CW + 6, y + 4, CW - 10, RH - 6, t, f, color(cols[c]["color"] | ""));
+                }
+              }
+            }

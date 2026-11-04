@@ -1,4 +1,4 @@
-# Interface: Home Assistant ↔ displays (v1.7)
+# Interface: Home Assistant ↔ displays (v1.8)
 
 Applies to every device that shows tiles or answers. Reference devices:
 
@@ -177,6 +177,40 @@ panels are slightly transparent. HA picks and prepares the photo: blueprint
 `<root>/<weather condition>/`, else `<root>/default/`, scaled/cropped and darkened with ffmpeg,
 served from `/local/wall_display/<node>.jpg` with a cache-busting `?v=`).
 
+### 4.7 Action `set_calendar` (7", optional)
+
+Optional week calendar as a second page of the wall display. Device side: package
+`esphome/wall-display-calendar.yaml` (included in addition to `wall-display.yaml`);
+HA side: package `wall_calendar.yaml`. Without the HA package the page stays off.
+
+```yaml
+api:
+  actions:
+    - action: set_calendar
+      variables:
+        cal: string   # JSON, see below; "cols": [] = page off
+```
+
+```json
+{"cols": [{"name": "Mama", "color": "#4FC3F7"}, {"name": "Alle", "color": "#A1887F"}],
+ "days": [{"label": "Mi\n04.11.", "today": true,  "weekend": false, "cells": ["19:30 Elternabend", ""]},
+          {"label": "Do\n05.11.", "today": false, "weekend": false, "cells": ["", "Feiertag"]}]}
+```
+
+| field | meaning |
+|---|---|
+| `cols` | max. 6 columns (one calendar or group of calendars each), `name` max. 14 chars, `color` `#RRGGBB` |
+| `days` | 7 rows from today; `label` = weekday + date (2 lines), `today` / `weekend` only change the row background |
+| `cells` | one string per column, max. 3 lines separated by `\n` (HA already shortens and adds "+n weitere") |
+
+The device only draws the grid (day column 64 px, header 34 px, rows 63 px) and clips text;
+all sorting, shortening and colours come from HA. Navigation: swipe left on the base view →
+calendar; swipe right or 60 s → back. HA resends on change of `sensor.wall_calendar` and on
+`esphome.display_ready`.
+
+The same package provides the tile `sensor.tile_calendar` (next event today, after 17:00 also
+tomorrow; prio 28, icon `calendar`) for the small tiles in the base view.
+
 ## 5. What each device implements
 
 | | S3 | C6 | 7" |
@@ -188,8 +222,12 @@ served from `/local/wall_display/<node>.jpg` with a cache-busting `?v=`).
 | event `display_ready` | optional | optional | ✅ |
 | weather-station base view | – | – | ✅ |
 | `set_background` | – | – | ✅ |
+| `set_calendar` | – | – | optional (calendar package) |
 
 ## Change rules
 
 New fields only as optional fields with a default (old devices ignore unknown JSON fields).
 New icons go into 1.2 first, then into the devices. Incompatible changes bump the major version.
+
+### Changelog
+- v1.8: optional action `set_calendar` (4.7) and tile `sensor.tile_calendar`. Existing devices unchanged.

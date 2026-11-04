@@ -1,0 +1,185 @@
+# Family calendar for the 7" wall display (optional, interface 4.7)
+#
+# With this package the wall display gets an extra page (swipe left on the weather station):
+# one week from today, days as rows, one column per calendar / person (max. 6).
+# Without this package the page stays off and swiping does nothing.
+# The device side is the optional ESPHome package esphome/wall-display-calendar.yaml.
+#
+# Also creates the tile sensor.tile_calendar (next event today, from 17:00 also tomorrow).
+# It only shows up once it has the label "Display" (like every tile).
+#
+# Cell content: max. 3 lines, "HH:MM title", only "title" for all-day events and on the
+# following days of multi-day events; more than 3 events → 2 lines + "+n weitere".
+#
+# ── ADAPT ──────────────────────────────────────────────────────────────
+#   columns   (below, max. 6)
+#     calendar: one calendar.* entity or a list of them (e.g. one Google calendar per person)
+#     name:     column header (max. 14 chars). Empty = name of the first calendar,
+#               so renaming the calendar in Google is enough.
+#     color:    "#RRGGBB". Empty = default colour of the column.
+#   display_node (automation at the bottom): ESPHome node name of your wall display
+
+template:
+  - triggers:
+      - trigger: time_pattern
+        minutes: "/15"
+      - trigger: time
+        at: "00:00:30"
+      - trigger: homeassistant
+        event: start
+      - trigger: event
+        event_type: event_template_reloaded
+    actions:
+      - variables:
+          # ===================== ADAPT =====================
+          columns:
+            - calendar: calendar.person_1
+              name: ""
+              color: ""
+            - calendar: calendar.person_2
+              name: ""
+              color: ""
+            - calendar: calendar.person_3
+              name: ""
+              color: ""
+            - calendar: calendar.person_4
+              name: ""
+              color: ""
+            - calendar: calendar.person_5
+              name: ""
+              color: ""
+            - calendar: [calendar.family, calendar.holidays]
+              name: "Alle"
+              color: ""
+          # =================================================
+          all_calendars: >
+            {% set ns = namespace(l=[]) %}
+            {% for s in columns[:6] %}
+              {% set ns.l = ns.l + (s.calendar if s.calendar is list else [s.calendar]) %}
+            {% endfor %}
+            {{ ns.l | unique | list }}
+      - action: calendar.get_events
+        target:
+          entity_id: "{{ all_calendars }}"
+        data:
+          start_date_time: "{{ today_at().isoformat() }}"
+          end_date_time: "{{ (today_at() + timedelta(days=7)).isoformat() }}"
+        response_variable: cal
+        continue_on_error: true
+      - variables:
+          data: >-
+            {%- set cal = cal if cal is defined and cal is mapping else {} -%}
+            {%- set palette = ['#4FC3F7', '#81C784', '#FFB74D', '#BA68C8', '#F48FB1', '#A1887F'] -%}
+            {%- set wd = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'] -%}
+            {%- set cols = columns[:6] -%}
+            {%- set n = cols | count -%}
+            {%- set maxlen = [(98 / [n, 1] | max) | int, 10] | max -%}
+            {%- set d0 = now().date() | string -%}
+            {%- set d1 = (now() + timedelta(days=1)).date() | string -%}
+            {%- set ns = namespace(cols=[], ev=[], days=[], next=[]) -%}
+            {#- ---------- columns and events ---------- -#}
+            {%- for s in cols -%}
+              {%- set ci = loop.index0 -%}
+              {%- set ks = s.calendar if s.calendar is list else [s.calendar] -%}
+              {%- set nm = s.get('name') or state_attr(ks[0], 'friendly_name') or ks[0].split('.')[-1] -%}
+              {%- set ns.cols = ns.cols + [{'name': (nm | string)[:14], 'color': s.get('color') or palette[ci]}] -%}
+              {%- for k in ks -%}
+                {%- for e in (cal[k].events if k in cal else []) -%}
+                  {%- set st = e.start | string -%}
+                  {%- set title = (e.summary | default('', true) | string | trim) -%}
+                  {%- if st | length == 10 -%}
+                    {%- set last = (strptime(e.end | string, '%Y-%m-%d') - timedelta(days=1)).date() | string -%}
+                    {%- set ns.ev = ns.ev + [{'c': ci, 'from': st, 'to': [last, st] | max, 'z': '', 'end': '', 't': title}] -%}
+                  {%- else -%}
+                    {%- set t0 = as_local(as_datetime(st)) -%}
+                    {%- set t1 = as_local(as_datetime(e.end | string)) -%}
+                    {%- set last = [(t1 - timedelta(seconds=1)).date() | string, t0.date() | string] | max -%}
+                    {%- set ns.ev = ns.ev + [{'c': ci, 'from': t0.date() | string, 'to': last, 'z': t0.strftime('%H:%M'), 'end': t1.isoformat(), 't': title}] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+              {%- endfor -%}
+            {%- endfor -%}
+            {#- ---------- week: 7 rows x n columns ---------- -#}
+            {%- for i in range(7) -%}
+              {%- set d = (now() + timedelta(days=i)).date() -%}
+              {%- set ds = d | string -%}
+              {%- set cells = namespace(l=[]) -%}
+              {%- for c in range(n) -%}
+                {%- set es = ns.ev | selectattr('c', 'eq', c) | selectattr('from', 'le', ds)
+                             | selectattr('to', 'ge', ds) | sort(attribute='z') | list -%}
+                {%- set lines = namespace(l=[]) -%}
+                {%- for e in es -%}
+                  {%- set lines.l = lines.l + [(((e.z ~ ' ') if e.z and e['from'] == ds else '') ~ e.t)[:maxlen]] -%}
+                {%- endfor -%}
+                {%- set l = lines.l if lines.l | count <= 3
+                            else lines.l[:2] + [('+' ~ (lines.l | count - 2) ~ ' weitere')[:maxlen]] -%}
+                {%- set cells.l = cells.l + [l | join('\n')] -%}
+              {%- endfor -%}
+              {%- set ns.days = ns.days + [{'label': wd[d.weekday()] ~ '\n' ~ d.strftime('%d.%m.'),
+                                            'today': i == 0, 'weekend': d.weekday() >= 5,
+                                            'cells': cells.l}] -%}
+            {%- endfor -%}
+            {#- ---------- next events (for the tile) ---------- -#}
+            {%- for e in ns.ev -%}
+              {%- if e.z and e['from'] == d0 and as_datetime(e.end) > now() -%}
+                {%- set ns.next = ns.next + [{'k': d0 ~ ' ' ~ e.z, 'w': 'Heute ' ~ e.z, 't': e.t[:20],
+                                              'name': ns.cols[e.c].name}] -%}
+              {%- elif now().hour >= 17 and e['from'] <= d1 and e.to >= d1 -%}
+                {%- set z = e.z if e.z and e['from'] == d1 else '' -%}
+                {%- set ns.next = ns.next + [{'k': d1 ~ ' ' ~ z, 'w': ('Morgen ' ~ z) | trim, 't': e.t[:20],
+                                              'name': ns.cols[e.c].name}] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ {'cols': ns.cols, 'days': ns.days, 'next': (ns.next | sort(attribute='k'))[:4]} }}
+    sensor:
+      - name: "Wall Calendar"
+        unique_id: wall_calendar
+        icon: mdi:calendar-week
+        # state = number of columns (0 = calendar page on the display off)
+        state: "{{ data.cols | count }}"
+        attributes:
+          cal: "{{ {'cols': data.cols, 'days': data.days} }}"
+          next: "{{ data.next }}"
+
+  # ---------- tile for the base view ----------
+  - sensor:
+      - name: "Tile Calendar"
+        unique_id: tile_calendar
+        icon: mdi:calendar
+        state: "{{ 'info' if state_attr('sensor.wall_calendar', 'next') else 'hidden' }}"
+        attributes:
+          prio: 28
+          title: >
+            {% set l = state_attr('sensor.wall_calendar', 'next') or [] %}
+            {{ l[0].w if l else 'Kalender' }}
+          value: >
+            {% set l = state_attr('sensor.wall_calendar', 'next') or [] %}
+            {{ l[0].t if l else '' }}
+          detail: >
+            {% set l = state_attr('sensor.wall_calendar', 'next') or [] %}
+            {% if l %}{{ l[0].name }}{{ ' · +' ~ (l | count - 1) ~ ' weitere' if l | count > 1 }}{% endif %}
+          progress: -1
+          tap: "none"
+
+automation:
+  - id: wall_calendar_push
+    alias: "Wall display: send calendar"
+    mode: restart
+    variables:
+      display_node: wall-display      # ── ADAPT: ESPHome node name of the wall display
+    triggers:
+      - trigger: state
+        entity_id: sensor.wall_calendar
+        attribute: cal
+      - trigger: event
+        event_type: esphome.display_ready
+      - trigger: homeassistant
+        event: start
+    conditions:
+      - "{{ trigger.platform != 'event' or trigger.event.data.device == display_node }}"
+    actions:
+      - delay: 3
+      - action: "esphome.{{ display_node | replace('-', '_') }}_set_calendar"
+        continue_on_error: true
+        data:
+          cal: "{{ state_attr('sensor.wall_calendar', 'cal') | to_json }}"

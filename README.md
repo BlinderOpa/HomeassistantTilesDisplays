@@ -10,6 +10,30 @@ requires reflashing a device.
 > Display texts and voice sentences are **German**. Code, comments and docs are English
 > (except the comments in the ESPHome files). Translating = editing the strings / blueprint inputs.
 
+## Screenshots
+
+| Wall display: weather station + small tiles | Alarm banner (train +20 min) |
+|---|---|
+| ![Weather station with tiles](docs/images/wall-display-clock.jpg) | ![Alarm banner and tiles](docs/images/wall-display-tiles.jpg) |
+
+| Full tile view (4×3, debug mode) | Voice satellite C6: tile | Voice satellite C6: answer |
+|---|---|---|
+| ![Tile grid](docs/images/wall-display-tile-grid.jpg) | ![C6 tile](docs/images/voice-satellite-c6-tile.jpg) | ![C6 answer](docs/images/voice-satellite-c6-answer.jpg) |
+
+## Hardware
+
+All devices are Waveshare boards, flashed with ESPHome (running with ESPHome 2026.10).
+
+| Device | Board | ESPHome file | What it does |
+|---|---|---|---|
+| **Wall display 7"** | Waveshare ESP32-S3-Touch-LCD-7 – ESP32-S3, 16 MB flash, 8 MB PSRAM, 800×480 RGB display, GT911 touch, CH422G IO expander | [`esphome/wall-display.yaml`](esphome/wall-display.yaml) | weather-station base view, up to 4 small tiles + full 4×3 tile view, alarm banner, answer popups, yes/no dialog, tap on tiles. No microphone/speaker. |
+| **Voice satellite C6** | Waveshare ESP32-C6-Touch-LCD-1.83 – ESP32-C6, 240×284 ST7789 display, CST816 touch, ES8311/ES7210 audio, QMI8658 IMU, PCF85063 RTC | [`esphome/voice-satellite-c6.yaml`](esphome/voice-satellite-c6.yaml) | Assist voice satellite (push-to-talk button, no wake word), answers on screen, swipe through the tiles, tap = same as on the wall display, yes/no by touch. |
+| **Voice satellite S3** | Waveshare ESP32-S3-LCD-0.85 – ESP32-S3, 128×128 ST7735 display, ES8311/ES7210 audio, PLUS/MINUS/PWR buttons, status LEDs | [`esphome/voice-satellite-s3.yaml`](esphome/voice-satellite-s3.yaml) | Assist voice satellite with wake word "Okay Nabu" (micro wake word on the device), answers as icon + short value, yes/no with the PLUS/MINUS buttons. No tiles. |
+
+The files only fit these boards (pins, display drivers). Your own device file in
+`esphome/examples/` just sets name, keys and Wi-Fi and pulls the right file from this repository.
+Other ESPHome displays can join by implementing the actions/events in [docs/interface.md](docs/interface.md).
+
 ## How it is organised
 
 **Logic lives in blueprints, your entities live in one file of your own.**
@@ -63,6 +87,7 @@ packages/                     only what needs fixed helpers or trigger-based tem
   voice/voice_shutters        shutters per room by voice, stop, tile "Rollo fährt"
   weather_station             sensor.ws_* for the 7" base view
   weather_background          shell command that picks + prepares the background photo (ffmpeg)
+  wall_calendar               optional: week calendar page (one column per calendar) + tile_calendar
 examples/my_wall_tiles.yaml   YOUR configuration: all blueprint calls in one package
 esphome/                      device firmware (ESPHome + LVGL) + examples/ for your device files
 docs/interface.md             the contract between HA and the devices
@@ -107,6 +132,9 @@ packages:
     files: [esphome/wall-display.yaml]
     refresh: 1d
 ```
+
+Optional week calendar page on the wall display: add `esphome/wall-display-calendar.yaml` to
+`files:` and copy `packages/wall_calendar.yaml` to HA (interface 4.7).
 
 See `esphome/examples/` and `esphome/secrets.example.yaml`.
 
