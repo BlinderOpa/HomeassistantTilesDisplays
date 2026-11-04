@@ -11,12 +11,18 @@
 # Cell content: max. 3 lines, "HH:MM title", only "title" for all-day events and on the
 # following days of multi-day events; more than 3 events → 2 lines + "+n weitere".
 #
+# Columns come from LABELS – no YAML needed:
+#   Create labels whose name starts with "Kalender " (or "Calendar "), e.g. "Kalender Sophia",
+#   "Kalender Alle", and give them to calendar.* entities (Settings → Entities → Labels).
+#   - every such label = one column, header = the text after "Kalender " (max. 14 chars)
+#   - all calendars with the same label go into the same column
+#   - order: alphabetical, "Alle"/"All"/"Familie"/"Family" always last; max. 6 columns
+#   - no such label (or no calendar in it) → calendar page off
+#   Colours: fixed palette by column position (templates can't read label colours).
+#   Changes to labels show up on the next refresh (every 15 min) or after "reload templates".
+#   Tip: don't label timetable calendars (every lesson would show up), rather exams/homework.
+#
 # ── ADAPT ──────────────────────────────────────────────────────────────
-#   columns   (below, max. 6)
-#     calendar: one calendar.* entity or a list of them (e.g. one Google calendar per person)
-#     name:     column header (max. 14 chars). Empty = name of the first calendar,
-#               so renaming the calendar in Google is enough.
-#     color:    "#RRGGBB". Empty = default colour of the column.
 #   display_node (automation at the bottom): ESPHome node name of your wall display
 
 template:
@@ -31,33 +37,31 @@ template:
         event_type: event_template_reloaded
     actions:
       - variables:
-          # ===================== ADAPT =====================
-          columns:
-            - calendar: calendar.person_1
-              name: ""
-              color: ""
-            - calendar: calendar.person_2
-              name: ""
-              color: ""
-            - calendar: calendar.person_3
-              name: ""
-              color: ""
-            - calendar: calendar.person_4
-              name: ""
-              color: ""
-            - calendar: calendar.person_5
-              name: ""
-              color: ""
-            - calendar: [calendar.family, calendar.holidays]
-              name: "Alle"
-              color: ""
-          # =================================================
+          # columns from labels "Kalender <name>" / "Calendar <name>"
+          columns: >
+            {% set ns = namespace(c=[]) %}
+            {% for l in labels() %}
+              {% set m = (label_name(l) or '') | regex_findall('^(?:kalender|calendar)[ :_-]+(.+)$', True) %}
+              {% if m %}
+                {% set ents = label_entities(l) | select('match', 'calendar\.') | list %}
+                {% if ents %}
+                  {% set nm = m[0] | trim %}
+                  {% set ns.c = ns.c + [{'name': nm, 'calendar': ents | sort,
+                                         'z': 1 if nm | lower in ['alle', 'all', 'familie', 'family'] else 0}] %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+            {{ (ns.c | sort(attribute='z,name'))[:6] }}
           all_calendars: >
             {% set ns = namespace(l=[]) %}
-            {% for s in columns[:6] %}
-              {% set ns.l = ns.l + (s.calendar if s.calendar is list else [s.calendar]) %}
+            {% for s in columns %}
+              {% set ns.l = ns.l + s.calendar %}
             {% endfor %}
             {{ ns.l | unique | list }}
+      # no labelled calendar → nothing to fetch (the page stays off / keeps its last state)
+      - if: "{{ all_calendars | count == 0 }}"
+        then:
+          - stop: "no calendar with a label 'Kalender …'"
       - action: calendar.get_events
         target:
           entity_id: "{{ all_calendars }}"
@@ -71,7 +75,7 @@ template:
             {%- set cal = cal if cal is defined and cal is mapping else {} -%}
             {%- set palette = ['#4FC3F7', '#81C784', '#FFB74D', '#BA68C8', '#F48FB1', '#A1887F'] -%}
             {%- set wd = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'] -%}
-            {%- set cols = columns[:6] -%}
+            {%- set cols = columns -%}
             {%- set n = cols | count -%}
             {%- set maxlen = [(98 / [n, 1] | max) | int, 10] | max -%}
             {%- set d0 = now().date() | string -%}

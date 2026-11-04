@@ -183,6 +183,11 @@ Optional week calendar as a second page of the wall display. Device side: packag
 `esphome/wall-display-calendar.yaml` (included in addition to `wall-display.yaml`);
 HA side: package `wall_calendar.yaml`. Without the HA package the page stays off.
 
+**Columns come from labels:** every label named `Kalender <name>` (or `Calendar <name>`) that is
+given to at least one `calendar.*` entity is one column with the header `<name>`; all calendars
+with that label share the column. Order alphabetical, `Alle`/`All`/`Familie`/`Family` last, max. 6.
+No such label → page off. Works with any calendar integration (Google, CalDAV, Remote Calendar …).
+
 ```yaml
 api:
   actions:
@@ -199,7 +204,7 @@ api:
 
 | field | meaning |
 |---|---|
-| `cols` | max. 6 columns (one calendar or group of calendars each), `name` max. 14 chars, `color` `#RRGGBB` |
+| `cols` | max. 6 columns (one label each), `name` max. 14 chars, `color` `#RRGGBB` (fixed palette by position) |
 | `days` | 7 rows from today; `label` = weekday + date (2 lines), `today` / `weekend` only change the row background |
 | `cells` | one string per column, max. 3 lines separated by `\n` (HA already shortens and adds "+n weitere") |
 
@@ -230,4 +235,4 @@ New fields only as optional fields with a default (old devices ignore unknown JS
 New icons go into 1.2 first, then into the devices. Incompatible changes bump the major version.
 
 ### Changelog
-- v1.8: optional action `set_calendar` (4.7) and tile `sensor.tile_calendar`. Existing devices unchanged.
+- v1.8: optional action `set_calendar` (4.7) and tile `sensor.tile_calendar`; columns via labels `Kalender <name>`. Existing devices unchanged.

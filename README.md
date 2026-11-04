@@ -87,7 +87,7 @@ packages/                     only what needs fixed helpers or trigger-based tem
   voice/voice_shutters        shutters per room by voice, stop, tile "Rollo fährt"
   weather_station             sensor.ws_* for the 7" base view
   weather_background          shell command that picks + prepares the background photo (ffmpeg)
-  wall_calendar               optional: week calendar page (one column per calendar) + tile_calendar
+  wall_calendar               optional: week calendar page (one column per label "Kalender <name>") + tile_calendar
 examples/my_wall_tiles.yaml   YOUR configuration: all blueprint calls in one package
 esphome/                      device firmware (ESPHome + LVGL) + examples/ for your device files
 docs/interface.md             the contract between HA and the devices
@@ -134,7 +134,8 @@ packages:
 ```
 
 Optional week calendar page on the wall display: add `esphome/wall-display-calendar.yaml` to
-`files:` and copy `packages/wall_calendar.yaml` to HA (interface 4.7).
+`files:` and copy `packages/wall_calendar.yaml` to HA (interface 4.7). Columns are set by labels:
+give your `calendar.*` entities labels like `Kalender Anna`, `Kalender Alle` – no YAML to edit.
 
 See `esphome/examples/` and `esphome/secrets.example.yaml`.
 
