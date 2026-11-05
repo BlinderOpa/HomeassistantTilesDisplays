@@ -16,6 +16,10 @@
 #   schicken können; die übrigen neuen Icons sind Kachel-Icons und fehlen hier
 #   (unbekanntes Icon wird zu "information").
 # Betriebsart: Push to Assistant (kein Wake Word)
+#   - Folgebefehle (Schalter in HA, Standard an): nach einer Antwort hört der Assistent
+#     weiter zu ("Rollo hoch", dann "Rollo stop"); Ende bei Stille oder "Abbrechen"
+#   - Display-Timeout (Regler in HA, 0 = nie aus): Display geht aus und wacht bei
+#     Berührung, BOOT-Taste, Antwort, Frage oder neuem Alarm-Kachel wieder auf
 #   - Nur der Knopf "Sprechen" oben oder die BOOT-Taste startet den Sprachassistenten
 #   - Solange der Assistent aktiv ist, steht oben der Knopf "Abbrechen"
 #   - "Warte auf Befehl..." erscheint nur bei aktivem Assistenten
@@ -50,6 +54,7 @@ esphome:
     - priority: -100
       then:
         - pcf85063.read_time:
+        - script.execute: display_wake
         # gespeicherte Lautstärke an den ES8311 übergeben
         - audio_dac.set_volume:
             id: my_es8311
@@ -284,6 +289,25 @@ globals:
     type: int
     restore_value: false
     initial_value: '0'
+  # Berührung hat das Display geweckt: soll nichts auslösen
+  - id: touch_woke
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  # neue Alarm-Kachel eingetroffen (weckt das Display)
+  - id: tile_alarm_new
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  # Befehle in dieser Sitzung (für Folgebefehle) und Wächter gegen hängende Anzeige
+  - id: session_commands
+    type: int
+    restore_value: false
+    initial_value: '0'
+  - id: idle_ticks
+    type: int
+    restore_value: false
+    initial_value: '0'
 
   # Antwort, die während einer Sprachausgabe eintraf (wird danach angezeigt)
   - id: pending_answer
@@ -389,13 +413,18 @@ touchscreen:
           id(touch_on) = true;
           id(touch_x0) = touches[0].x;
           id(touch_y0) = touches[0].y;
+          // war das Display aus, weckt die Berührung es nur
+          if (!id(lcd_backlight).current_values.is_on()) id(touch_woke) = true;
         }
         id(touch_xl) = touches[0].x;
+    - script.execute: display_wake
   on_release:
     - lambda: 'id(touch_on) = false;'
     - script.execute:
         id: tile_swipe
         dx: !lambda 'return id(touch_xl) - id(touch_x0);'
+    - delay: 400ms
+    - lambda: 'id(touch_woke) = false;'
 
 # ----------------------------------------------------------------------------
 # Audio: I2S (MCLK = GPIO 19, SCLK/BCLK = GPIO 20, LRCK = GPIO 22),
@@ -538,14 +567,75 @@ number:
           id: my_es8311
           volume: !lambda 'return x / 100.0f;'
 
+  # Nach so vielen Sekunden ohne Aktivität geht das Display aus (0 = nie)
+  - platform: template
+    name: "Display-Timeout"
+    id: display_timeout
+    icon: "mdi:monitor-off"
+    unit_of_measurement: "s"
+    mode: box
+    min_value: 0
+    max_value: 600
+    step: 5
+    optimistic: true
+    restore_value: true
+    initial_value: 60
+    set_action:
+      - script.execute: display_wake
+
+# Nach einer Antwort weiter zuhören (Folgebefehle wie "Rollo stop")
+switch:
+  - platform: template
+    name: "Folgebefehle"
+    id: follow_up
+    icon: "mdi:message-reply-text"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+
 # ----------------------------------------------------------------------------
 # Skripte
 # ----------------------------------------------------------------------------
 script:
+  # Display einschalten (falls aus) und Abschaltzeit neu starten
+  - id: display_wake
+    then:
+      - if:
+          condition:
+            lambda: 'return !id(lcd_backlight).current_values.is_on();'
+          then:
+            - light.turn_on:
+                id: lcd_backlight
+                transition_length: 200ms
+      - script.execute: display_sleep
+
+  # Abschaltzeit: nach dem Timeout aus, solange Assistent, Antwort oder Frage laufen, nicht
+  - id: display_sleep
+    mode: restart
+    then:
+      - if:
+          condition:
+            lambda: 'return id(display_timeout).state > 0;'
+          then:
+            - delay: !lambda 'return (uint32_t) (id(display_timeout).state * 1000);'
+            - while:
+                condition:
+                  lambda: 'return id(assistant_active) || id(answer_active) || id(question_active);'
+                then:
+                  - delay: 1s
+            - delay: 10s
+            - if:
+                condition:
+                  lambda: 'return !id(assistant_active) && !id(answer_active) && !id(question_active);'
+                then:
+                  - light.turn_off:
+                      id: lcd_backlight
+                      transition_length: 400ms
+
   # Assistent starten (Berührung oder BOOT-Taste)
   - id: start_assistant
     mode: single
     then:
+      - script.execute: display_wake
       - if:
           condition:
             api.connected:
@@ -565,9 +655,18 @@ script:
                   - script.execute: clear_response
                   - lambda: |-
                       id(assistant_active) = true;
+                      id(session_commands) = 0;
                       id(status_text) = "Höre zu...";
                   - script.execute: apply_response
-                  - voice_assistant.start:
+                  - script.execute: session_watchdog
+                  # mit Folgebefehlen hört der Assistent nach jeder Antwort weiter zu
+                  - if:
+                      condition:
+                        switch.is_on: follow_up
+                      then:
+                        - voice_assistant.start_continuous:
+                      else:
+                        - voice_assistant.start:
           else:
             - lambda: 'id(status_text) = "Keine Verbindung";'
             - script.execute: apply_ui
@@ -585,6 +684,39 @@ script:
           id(assistant_active) = false;
           id(status_text) = "Bereit";
       - script.execute: apply_response
+
+  # Wächter: steht die Anzeige auf "aktiv", der Assistent läuft aber nicht mehr
+  # und es wird nichts abgespielt, nach 3 s zurück auf "Bereit"
+  - id: session_watchdog
+    mode: restart
+    then:
+      - lambda: 'id(idle_ticks) = 0;'
+      - delay: 5s
+      - while:
+          condition:
+            lambda: 'return id(assistant_active);'
+          then:
+            - delay: 1s
+            - if:
+                condition:
+                  and:
+                    - not:
+                        voice_assistant.is_running:
+                    - not:
+                        speaker.is_playing: board_speaker
+                then:
+                  - lambda: 'id(idle_ticks)++;'
+                else:
+                  - lambda: 'id(idle_ticks) = 0;'
+            - if:
+                condition:
+                  lambda: 'return id(idle_ticks) >= 3;'
+                then:
+                  - lambda: |-
+                      id(assistant_active) = false;
+                      id(status_text) = "Bereit";
+                      id(idle_ticks) = 0;
+                  - script.execute: apply_response
 
   # Status, Hinweistext und Abbrechen-Knopf aktualisieren
   - id: apply_ui
@@ -619,6 +751,7 @@ script:
       a_icon: string
       a_duration: int
     then:
+      - script.execute: display_wake
       - if:
           condition:
             or:
@@ -723,6 +856,7 @@ script:
       q_icon: string
       q_timeout: int
     then:
+      - script.execute: display_wake
       - script.execute: abort_question
       - script.execute:
           id: set_icon
@@ -1004,6 +1138,9 @@ script:
             st += status; ti += title; va += value; de += detail; ki += kid; tp += tap;
             count++;
           }
+          // neue Alarm-Kachel: weckt das Display
+          id(tile_alarm_new) = (st.find("alarm") != std::string::npos) &&
+                               (st != id(tile_stati) || ti != id(tile_titles) || va != id(tile_values));
           id(tile_stati) = st;
           id(tile_titles) = ti;
           id(tile_values) = va;
@@ -1012,6 +1149,11 @@ script:
           id(tile_taps) = tp;
           id(tile_count) = count;
           if (id(tile_idx) >= count) id(tile_idx) = 0;
+      - if:
+          condition:
+            lambda: 'return id(tile_alarm_new);'
+          then:
+            - script.execute: display_wake
       - script.execute: apply_response
 
   # Berührung losgelassen: Wischen blättert, kurzes Tippen auf die Kachel (unterhalb
@@ -1022,7 +1164,7 @@ script:
     then:
       - if:
           condition:
-            lambda: 'return id(tile_mode) && id(tile_count) > 1 && (dx > 40 || dx < -40);'
+            lambda: 'return id(tile_mode) && !id(touch_woke) && id(tile_count) > 1 && (dx > 40 || dx < -40);'
           then:
             - lambda: |-
                 int n = id(tile_count);
@@ -1032,7 +1174,7 @@ script:
       - if:
           condition:
             lambda: |-
-              return id(tile_mode) && dx > -15 && dx < 15 && id(touch_y0) > 55 &&
+              return id(tile_mode) && !id(touch_woke) && dx > -15 && dx < 15 && id(touch_y0) > 55 &&
                      id(cur_tile_tap) != "none" && !id(cur_tile_id).empty();
           then:
             # kurzes Aufblitzen als Rückmeldung
@@ -1450,8 +1592,14 @@ voice_assistant:
     - microphone: board_mic
   auto_gain: 21dBFS
   on_listening:
-    - lambda: 'id(status_text) = "Höre zu...";'
-    - lvgl.widget.refresh: status_label
+    - lambda: |-
+        id(status_text) = "Höre zu...";
+        id(assistant_active) = true;
+    - script.execute: display_wake
+    - script.execute: session_watchdog
+    - script.execute: apply_response
+  on_stt_end:
+    - lambda: 'if (!x.empty()) id(session_commands)++;'
   on_stt_vad_end:
     - lambda: 'id(status_text) = "Verstehe...";'
     - lvgl.widget.refresh: status_label
@@ -1478,21 +1626,32 @@ voice_assistant:
         else:
           - script.execute: auto_clear
   on_error:
-    - script.execute:
-        id: display_answer
-        d_title: "Assistent"
-        d_value: !lambda 'return code == "stt-no-text-recognized" ? std::string("Nicht verstanden") : std::string("Fehler");'
-        d_detail: ""
-        d_status: "alarm"
-        d_icon: "close"
-        d_duration: 3
-    - lambda: 'id(status_text) = "Fehler";'
-    - lvgl.widget.refresh: status_label
-    - delay: 3s
-    - lambda: |-
-        id(assistant_active) = false;
-        id(status_text) = "Bereit";
-    - script.execute: apply_response
+    - if:
+        # Stille nach einem erfolgreichen Befehl (Folgebefehle): leise beenden
+        condition:
+          lambda: 'return code == "stt-no-text-recognized" && id(session_commands) > 0;'
+        then:
+          - voice_assistant.stop:
+          - lambda: |-
+              id(assistant_active) = false;
+              id(status_text) = "Bereit";
+          - script.execute: apply_response
+        else:
+          - script.execute:
+              id: display_answer
+              d_title: "Assistent"
+              d_value: !lambda 'return code == "stt-no-text-recognized" ? std::string("Nicht verstanden") : std::string("Fehler");'
+              d_detail: ""
+              d_status: "alarm"
+              d_icon: "close"
+              d_duration: 3
+          - lambda: 'id(status_text) = "Fehler";'
+          - lvgl.widget.refresh: status_label
+          - delay: 3s
+          - lambda: |-
+              id(assistant_active) = false;
+              id(status_text) = "Bereit";
+          - script.execute: apply_response
 
 # ----------------------------------------------------------------------------
 # Icons (Material Design Icons, Namen wie in Schnittstelle 1.2)
@@ -1767,7 +1926,11 @@ lvgl:
                   radius: 6
                   bg_color: "0x2E7D32"
                   on_click:
-                    - script.execute: start_assistant
+                    - if:
+                        condition:
+                          lambda: 'return !id(touch_woke);'
+                        then:
+                          - script.execute: start_assistant
                   widgets:
                     - label:
                         align: CENTER

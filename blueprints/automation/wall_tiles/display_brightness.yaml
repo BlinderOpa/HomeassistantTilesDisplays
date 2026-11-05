@@ -2,6 +2,8 @@ blueprint:
   name: "Wall tiles: display brightness by time of day"
   description: >
     Sets a display's brightness: bright during the day, dimmed after sunset, dark at night.
+    Optionally switches the display's night mode during the night: backlight off,
+    a tap wakes the display for a short time (wake time = number "Display Wachzeit" on the device).
     Runs at sunrise/sunset, at the night start/end times, on HA start and when the
     device reports esphome.display_ready.
   domain: automation
@@ -37,6 +39,16 @@ blueprint:
       name: Night ends
       default: "06:00:00"
       selector: {time: {}}
+    night_mode_entity:
+      name: Night mode switch (optional)
+      description: >
+        The device's switch "Display Nachtmodus" (e.g. switch.my_wall_display_display_nachtmodus).
+        If set, it is on during the night: backlight off, a tap wakes the display briefly.
+        Alarm tiles and popups switch the backlight on as well.
+      default: ""
+      selector:
+        entity:
+          domain: switch
 
 mode: restart
 
@@ -63,9 +75,11 @@ variables:
   night_: !input night
   ns_: !input night_start
   ne_: !input night_end
-  value: >
+  night_switch: !input night_mode_entity
+  is_night: >
     {% set t = now().strftime('%H:%M:%S') %}
-    {% set is_night = (t >= ns_ or t < ne_) if ns_ > ne_ else (ns_ <= t < ne_) %}
+    {{ (t >= ns_ or t < ne_) if ns_ > ne_ else (ns_ <= t < ne_) }}
+  value: >
     {% if is_night %}{{ night_ }}
     {% elif is_state('sun.sun', 'above_horizon') %}{{ day_ }}
     {% else %}{{ evening_ }}{% endif %}
@@ -76,3 +90,11 @@ actions:
       entity_id: "{{ ent }}"
     data:
       value: "{{ value }}"
+  - if:
+      - condition: template
+        value_template: "{{ night_switch not in [none, ''] }}"
+    then:
+      - action: "switch.turn_{{ 'on' if is_night else 'off' }}"
+        continue_on_error: true
+        target:
+          entity_id: "{{ night_switch }}"

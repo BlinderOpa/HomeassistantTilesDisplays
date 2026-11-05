@@ -97,6 +97,7 @@ automation:
       input:
         brightness_entity: number.my_wall_display_brightness
         node_name: my-wall-display
+        night_mode_entity: switch.my_wall_display_night_mode   # optional: backlight off at night, tap wakes
 
   - id: laundry_done_detect
     alias: "Laundry: detect done"

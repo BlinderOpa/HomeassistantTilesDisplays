@@ -1,4 +1,4 @@
-# Interface: Home Assistant ↔ displays (v1.8)
+# Interface: Home Assistant ↔ displays (v1.9)
 
 Applies to every device that shows tiles or answers. Reference devices:
 
@@ -216,6 +216,22 @@ calendar; swipe right or 60 s → back. HA resends on change of `sensor.wall_cal
 The same package provides the tile `sensor.tile_calendar` (next event today, after 17:00 also
 tomorrow; prio 28, icon `calendar`) for the small tiles in the base view.
 
+### 4.8 Night mode (7")
+
+The backlight of the 7" can only be switched on/off (no PWM), so dimming at night does not help much.
+Instead the device offers:
+
+| entity | meaning |
+|---|---|
+| switch `Display Nachtmodus` | on = backlight off; a tap wakes the display |
+| number `Display Wachzeit` | seconds the display stays on after a tap (5–600, default 30); every further touch restarts it |
+| switch `Display Hintergrundbeleuchtung` | master switch: off = always dark (a tap switches it on permanently) |
+
+While the backlight is off, LVGL is paused, so the waking tap never triggers a tile or button.
+Also on in night mode: a tile with `status: alarm` (until it is gone), and `show_answer` /
+`show_question` (for the wake time). When it goes dark, the 4×3 tile view is closed.
+HA switches the night mode via the blueprint `display_brightness.yaml` (input `night_mode_entity`).
+
 ## 5. What each device implements
 
 | | S3 | C6 | 7" |
@@ -224,9 +240,12 @@ tomorrow; prio 28, icon `calendar`) for the small tiles in the base view.
 | `show_question` / `cancel_question` | ✅ buttons | ✅ | ✅ |
 | `set_tiles` | – | ✅ swipe, no icon | ✅ |
 | event `display_tap` | – | ✅ | ✅ |
+| display sleep (number "Display-Timeout", 0 = never) | – | ✅ wakes on touch, button, answer, question, new alarm tile | – |
+| follow-up commands (switch "Folgebefehle") | – | ✅ keeps listening after an answer | – |
 | event `display_ready` | optional | optional | ✅ |
 | weather-station base view | – | – | ✅ |
 | `set_background` | – | – | ✅ |
+| night mode (switch "Display Nachtmodus", number "Display Wachzeit") | – | – | ✅ |
 | `set_calendar` | – | – | optional (calendar package) |
 
 ## Change rules
@@ -235,4 +254,5 @@ New fields only as optional fields with a default (old devices ignore unknown JS
 New icons go into 1.2 first, then into the devices. Incompatible changes bump the major version.
 
 ### Changelog
+- v1.9: 7" night mode (4.8): backlight off at night, tap wakes it for "Display Wachzeit"; alarm tiles and popups wake it too. Blueprint `display_brightness` switches it (optional input). Only the 7" firmware changes.
 - v1.8: optional action `set_calendar` (4.7) and tile `sensor.tile_calendar`; columns via labels `Kalender <name>`. Existing devices unchanged.

@@ -27,7 +27,7 @@ All devices are Waveshare boards, flashed with ESPHome (running with ESPHome 202
 | Device | Board | ESPHome file | What it does |
 |---|---|---|---|
 | **Wall display 7"** | Waveshare ESP32-S3-Touch-LCD-7 – ESP32-S3, 16 MB flash, 8 MB PSRAM, 800×480 RGB display, GT911 touch, CH422G IO expander | [`esphome/wall-display.yaml`](esphome/wall-display.yaml) | weather-station base view, up to 4 small tiles + full 4×3 tile view, alarm banner, answer popups, yes/no dialog, tap on tiles. No microphone/speaker. |
-| **Voice satellite C6** | Waveshare ESP32-C6-Touch-LCD-1.83 – ESP32-C6, 240×284 ST7789 display, CST816 touch, ES8311/ES7210 audio, QMI8658 IMU, PCF85063 RTC | [`esphome/voice-satellite-c6.yaml`](esphome/voice-satellite-c6.yaml) | Assist voice satellite (push-to-talk button, no wake word), answers on screen, swipe through the tiles, tap = same as on the wall display, yes/no by touch. |
+| **Voice satellite C6** | Waveshare ESP32-C6-Touch-LCD-1.83 – ESP32-C6, 240×284 ST7789 display, CST816 touch, ES8311/ES7210 audio, QMI8658 IMU, PCF85063 RTC | [`esphome/voice-satellite-c6.yaml`](esphome/voice-satellite-c6.yaml) | Assist voice satellite (push-to-talk button, no wake word), answers on screen, swipe through the tiles, tap = same as on the wall display, yes/no by touch. Optional follow-up commands (keeps listening after an answer, e.g. "Rollo hoch" then "Rollo stop") and an adjustable display timeout (screen off, wakes on touch, button, answer or new alarm tile). |
 | **Voice satellite S3** | Waveshare ESP32-S3-LCD-0.85 – ESP32-S3, 128×128 ST7735 display, ES8311/ES7210 audio, PLUS/MINUS/PWR buttons, status LEDs | [`esphome/voice-satellite-s3.yaml`](esphome/voice-satellite-s3.yaml) | Assist voice satellite with wake word "Okay Nabu" (micro wake word on the device), answers as icon + short value, yes/no with the PLUS/MINUS buttons. No tiles. |
 
 The files only fit these boards (pins, display drivers). Your own device file in
@@ -72,7 +72,7 @@ blueprints/
     tile_tap_handler          tap on a tile → toggle / run action        (once)
     tiles_push                send tiles to one ESPHome display          (per display)
     calendar_push             send the week calendar to the wall display (with wall_calendar)
-    display_brightness        day / evening / night brightness
+    display_brightness        day / evening / night brightness, optional night mode (7": dark, tap wakes)
     weather_background        faded photo behind the base view, chosen by the current weather
     appliance_done_detect     sets the "done" flag of an appliance
     voice_ack_tile            "Müll ist draußen" = tap by voice

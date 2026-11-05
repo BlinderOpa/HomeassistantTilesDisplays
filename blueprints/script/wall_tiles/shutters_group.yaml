@@ -2,7 +2,8 @@ blueprint:
   name: "Wall tiles: shutters open / close (group)"
   description: >
     Opens or closes only those shutters of a list that are not already there.
-    "Down" = position ≤ 40 %. When closing, one optional shutter only goes to a partial
+    Close: "down" = position ≤ down_position (default 40 %). Open: every shutter below
+    open_position (default 95 %) is opened. When closing, one optional shutter only goes to a partial
     position (e.g. terrace door so the dog can get out).
     Used by the tile "shutters still open / still closed" and the voice confirmations.
   domain: script
@@ -27,6 +28,13 @@ blueprint:
       name: Counts as down up to position (%)
       default: 40
       selector: {number: {min: 0, max: 100, unit_of_measurement: "%"}}
+    open_position:
+      name: 'Mode "open": counts as open from position (%)'
+      description: >
+        In the morning every shutter below this position is opened, so a shutter that was
+        set by hand to e.g. 43 % is still treated as "not open yet".
+      default: 95
+      selector: {number: {min: 1, max: 100, unit_of_measurement: "%"}}
 
 mode: queued
 
@@ -36,12 +44,14 @@ variables:
   half: !input partial_cover
   half_pos: !input partial_position
   down_p: !input down_position
+  open_p: !input open_position
   todo: >
     {% set ns = namespace(l=[]) %}
     {% for e in covers_ %}
       {% set p = state_attr(e, 'current_position') %}
       {% set is_down = (p is number and p <= down_p | int) or (p is not number and is_state(e, 'closed')) %}
-      {% if is_down == (mode_ == 'open') %}{% set ns.l = ns.l + [e] %}{% endif %}
+      {% set not_open = (p is number and p < open_p | int) or (p is not number and not is_state(e, 'open')) %}
+      {% if (not_open if mode_ == 'open' else not is_down) %}{% set ns.l = ns.l + [e] %}{% endif %}
     {% endfor %}
     {{ ns.l }}
   full: "{{ todo | reject('eq', half) | list if mode_ == 'close' else todo }}"

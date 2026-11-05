@@ -10,6 +10,7 @@
 #     unten  Sonnenauf-/untergang, oder bis zu 4 kleine Kacheln (+n)
 #   Aktionen: show_answer, show_question, cancel_question, set_tiles, set_background
 #   Hintergrund: Wetterbild als JPEG von HA (set_background, Schnittstelle 4.6)
+#   Nachtmodus: Beleuchtung aus, Antippen weckt für kurze Zeit (Schnittstelle 4.8)
 #   Events:   esphome.display_question_answer, esphome.display_tap, esphome.display_ready
 # Daten: nur sensor.ws_* aus dem HA-Package weather_station.yaml
 # ============================================================================
@@ -38,14 +39,7 @@ esphome:
       - script.execute:
           id: apply_dimming
           level: !lambda 'return id(display_helligkeit).state;'
-      - if:
-          condition:
-            switch.is_on: display_backlight
-          then:
-            - lambda: 'id(ch422g_hub)->digital_write(2, true);'
-          else:
-            - lambda: 'id(ch422g_hub)->digital_write(2, false);'
-            - lvgl.pause:
+      - script.execute: apply_backlight
 
 esp32:
   variant: esp32s3
@@ -121,6 +115,7 @@ api:
             lv_label_set_text(id(answer_value), s_value.c_str());
             lv_label_set_text(id(answer_detail), s_detail.c_str());
         - lvgl.widget.show: answer_popup
+        - script.execute: wake_if_night
         - script.execute:
             id: answer_timer
             seconds: !lambda 'return duration > 0 ? duration : 8;'
@@ -150,6 +145,7 @@ api:
             lv_label_set_text(id(question_icon), id(icon_glyph)(s_icon.empty() ? std::string("help") : s_icon).c_str());
             lv_label_set_text(id(question_text), s_question.c_str());
         - lvgl.widget.show: question_popup
+        - script.execute: wake_if_night
         - script.execute:
             id: question_timer
             seconds: !lambda 'return timeout > 0 ? timeout : 30;'
@@ -321,6 +317,9 @@ api:
               lv_obj_add_flag(id(alarm_banner), LV_OBJ_FLAG_HIDDEN);
             }
             ESP_LOGI("tiles", "set_tiles: %u Kacheln, Alarm: %s", (unsigned) n, alarm ? "ja" : "nein");
+            id(alarm_active) = (alarm != nullptr);
+        # Nachts: Alarm schaltet die Beleuchtung an, bis er weg ist
+        - script.execute: apply_backlight
 
     # ------------------------------------------------------------------
     # 4.6 set_background: Wetter-Hintergrundbild laden, "" = ausblenden
@@ -380,11 +379,16 @@ touchscreen:
     mirror_x: false
     mirror_y: false
   on_release:
-    # Display aus -> Antippen schaltet wieder ein (Tipp löst sonst nichts aus)
+    # Ist die Beleuchtung aus, ist LVGL pausiert: der Tipp weckt nur und löst nichts aus.
     - if:
-        condition: lvgl.is_paused
+        condition:
+          lambda: 'return !id(display_backlight).state;'
         then:
+          # von Hand ausgeschaltet -> wieder dauerhaft an
           - switch.turn_on: display_backlight
+        else:
+          # Nachtmodus: aufwecken bzw. jede Berührung verlängert die Wachzeit
+          - script.execute: wake_if_night
 
 display:
   - platform: mipi_rgb
@@ -436,23 +440,44 @@ switch:
     icon: mdi:monitor
     optimistic: true
     restore_mode: RESTORE_DEFAULT_ON
-    turn_on_action:
-      - if:
-          condition:
-            lambda: 'return id(boot_done);'
-          then:
-            - lambda: 'id(ch422g_hub)->digital_write(2, true);'
-            - lvgl.resume:
-            - lvgl.widget.redraw:
-    turn_off_action:
-      - if:
-          condition:
-            lambda: 'return id(boot_done);'
-          then:
-            - lambda: 'id(ch422g_hub)->digital_write(2, false);'
-            - lvgl.pause:
+    # Schaltet erst nach dem Statuswechsel, damit apply_backlight den neuen Zustand sieht
+    on_turn_on:
+      - script.execute: apply_backlight
+    on_turn_off:
+      - script.execute: apply_backlight
+
+  # Nachtmodus (Schnittstelle 4.8): Beleuchtung aus, Antippen weckt für "Display Wachzeit".
+  # Ein-/Ausschalten macht HA (Blueprint display_brightness, Eingabe night_mode_entity).
+  - platform: template
+    name: "Display Nachtmodus"
+    id: night_mode
+    icon: mdi:weather-night
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    on_turn_on:
+      - script.stop: night_wake
+      - lambda: 'id(night_awake) = false;'
+      - script.execute: apply_backlight
+    on_turn_off:
+      - script.stop: night_wake
+      - lambda: 'id(night_awake) = false;'
+      - script.execute: apply_backlight
 
 number:
+  - platform: template
+    name: "Display Wachzeit"
+    id: wake_seconds
+    icon: mdi:timer-outline
+    entity_category: config
+    unit_of_measurement: s
+    min_value: 5
+    max_value: 600
+    step: 5
+    mode: box
+    optimistic: true
+    restore_value: true
+    initial_value: 30
+
   - platform: template
     name: "Display Helligkeit"
     id: display_helligkeit
@@ -602,6 +627,15 @@ text_sensor:
 # ============================================================================
 
 globals:
+  - id: night_awake        # Nachtmodus: gerade per Tipp/Popup geweckt
+    type: bool
+    initial_value: 'false'
+  - id: alarm_active       # mindestens eine Kachel mit status alarm
+    type: bool
+    initial_value: 'false'
+  - id: backlight_is_on    # tatsächlicher Zustand der Beleuchtung
+    type: bool
+    initial_value: 'true'
   - id: boot_done
     type: bool
     initial_value: 'false'
@@ -718,6 +752,47 @@ globals:
       }
 
 script:
+  # Beleuchtung an, wenn: Schalter an UND (kein Nachtmodus ODER geweckt ODER Alarm)
+  - id: apply_backlight
+    mode: queued
+    then:
+      - if:
+          condition:
+            lambda: 'return id(boot_done);'
+          then:
+            - lambda: |-
+                bool want = id(display_backlight).state &&
+                            (!id(night_mode).state || id(night_awake) || id(alarm_active));
+                id(ch422g_hub)->digital_write(2, want);
+                id(backlight_is_on) = want;
+            - if:
+                condition:
+                  lambda: 'return id(backlight_is_on);'
+                then:
+                  - lvgl.resume:
+                  - lvgl.widget.redraw:
+                else:
+                  # beim Ausgehen zurück zur Grundansicht, damit nach dem Wecken die Uhr kommt
+                  - lvgl.widget.hide: tiles_view
+                  - lvgl.pause:
+
+  # Nachtmodus: für "Display Wachzeit" Sekunden aufwecken (jeder weitere Tipp verlängert)
+  - id: wake_if_night
+    then:
+      - if:
+          condition:
+            switch.is_on: night_mode
+          then:
+            - script.execute: night_wake
+  - id: night_wake
+    mode: restart
+    then:
+      - lambda: 'id(night_awake) = true;'
+      - script.execute: apply_backlight
+      - delay: !lambda 'return (uint32_t) (isnan(id(wake_seconds).state) ? 30 : id(wake_seconds).state) * 1000;'
+      - lambda: 'id(night_awake) = false;'
+      - script.execute: apply_backlight
+
   - id: apply_dimming
     parameters:
       level: float
