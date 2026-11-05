@@ -1,0 +1,87 @@
+blueprint:
+  name: "Wall tiles: weather forecast today"
+  description: >
+    Today's daily forecast for the base view of the wall display, updated every 15 minutes.
+    State = HA weather condition (sunny, rainy …), attributes text (German), symbol (mdi name),
+    temp_max, temp_min, rain, source (weather entity actually used).
+    The weather entity is optional: empty = first available weather entity with a daily
+    forecast. A chosen entity that is unavailable is replaced automatically for that run.
+    For the display name it "WS Forecast" with unique_id ws_forecast → sensor.ws_forecast.
+  domain: template
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/template/wall_tiles/weather_forecast_today.yaml
+  input:
+    weather_entity:
+      name: Weather entity (optional)
+      description: Empty = automatic. Set it only if you have several weather integrations.
+      default: ""
+      selector: {entity: {domain: weather}}
+
+triggers:
+  - trigger: time_pattern
+    minutes: "/15"
+  - trigger: homeassistant
+    event: start
+  - trigger: event
+    event_type: event_template_reloaded
+
+variables:
+  preferred: !input weather_entity
+  # preferred entity if available, otherwise the first available one with daily forecast (feature 1)
+  src: >
+    {% set ns = namespace(e='') %}
+    {% if preferred and states(preferred) not in ['unknown', 'unavailable'] %}
+      {% set ns.e = preferred %}
+    {% else %}
+      {% for s in states.weather if s.state not in ['unknown', 'unavailable'] %}
+        {% if ns.e == '' and (s.attributes.get('supported_features', 0) | int(0)) | bitwise_and(1) %}
+          {% set ns.e = s.entity_id %}
+        {% endif %}
+      {% endfor %}
+    {% endif %}
+    {{ ns.e }}
+
+conditions:
+  - condition: template
+    value_template: "{{ src != '' }}"
+
+actions:
+  - action: weather.get_forecasts
+    target:
+      entity_id: "{{ src }}"
+    data:
+      type: daily
+    response_variable: r
+    continue_on_error: true
+  - variables:
+      f: >
+        {% set fc = r[src].forecast if r is defined and src in r else [] %}
+        {{ fc[0] if fc else {} }}
+
+sensor:
+  icon: mdi:weather-partly-cloudy
+  state: "{{ f.get('condition', 'unbekannt') }}"
+  attributes:
+    text: >
+      {{ {'sunny':'sonnig', 'clear-night':'klar', 'partlycloudy':'teils bewölkt',
+          'cloudy':'bewölkt', 'rainy':'Regen', 'pouring':'Starkregen',
+          'snowy':'Schnee', 'snowy-rainy':'Schneeregen', 'fog':'Nebel',
+          'hail':'Hagel', 'lightning':'Gewitter', 'lightning-rainy':'Gewitter',
+          'windy':'windig', 'windy-variant':'windig', 'exceptional':'Unwetter'}.get(f.get('condition', ''), '') }}
+    symbol: >
+      {{ {'sunny':'weather-sunny', 'clear-night':'weather-night',
+          'partlycloudy':'weather-partly-cloudy', 'cloudy':'weather-cloudy',
+          'rainy':'weather-rainy', 'pouring':'weather-pouring',
+          'snowy':'weather-snowy', 'snowy-rainy':'weather-snowy-rainy',
+          'fog':'weather-fog', 'hail':'weather-hail',
+          'lightning':'weather-lightning', 'lightning-rainy':'weather-lightning-rainy',
+          'windy':'weather-windy', 'windy-variant':'weather-windy',
+          'exceptional':'alert'}.get(f.get('condition', ''), 'weather-partly-cloudy') }}
+    temp_max: "{{ f.get('temperature') }}"
+    temp_min: "{{ f.get('templow') }}"
+    rain: >
+      {% set p = f.get('precipitation_probability') %}
+      {% set mm = f.get('precipitation') %}
+      {% if p is not none %}{{ p | int }} %
+      {% elif mm is not none and mm | float(0) < 0.1 %}kein Regen
+      {% elif mm is not none %}{{ '%.1f' | format(mm | float) | replace('.', ',') }} mm{% endif %}
+    source: "{{ src }}"

@@ -2,14 +2,18 @@ blueprint:
   name: "Wall tiles voice: weather and rain (today / tomorrow)"
   description: >
     Voice commands for the weather and "will it rain?" today or tomorrow.
-    Needs a weather entity with daily AND hourly forecast (Met.no: yes).
+    Needs a weather entity with daily AND hourly forecast (Met.no, Open-Meteo: yes).
     Rain questions use the hourly forecast: today = from now until midnight,
     tomorrow = 6:00–21:59. An hour counts as wet from 0.2 mm or 50 % probability.
   domain: automation
   source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/automation/wall_tiles/voice_weather.yaml
   input:
     weather_entity:
-      name: Weather entity
+      name: Weather entity (optional)
+      description: >
+        Empty = first available weather entity with daily and hourly forecast. A chosen entity
+        that is unavailable (e.g. Met.no answers 503) is replaced automatically.
+      default: ""
       selector:
         entity:
           domain: weather
@@ -47,7 +51,20 @@ triggers:
     command: !input s_rain_tomorrow
 
 variables:
-  we: !input weather_entity
+  we_in: !input weather_entity
+  # preferred entity if available, otherwise the first available one with daily + hourly forecast (features 1+2)
+  we: >
+    {% set ns = namespace(e='') %}
+    {% if we_in and states(we_in) not in ['unknown', 'unavailable'] %}
+      {% set ns.e = we_in %}
+    {% else %}
+      {% for s in states.weather if s.state not in ['unknown', 'unavailable'] %}
+        {% if ns.e == '' and (s.attributes.get('supported_features', 0) | int(0)) | bitwise_and(3) == 3 %}
+          {% set ns.e = s.entity_id %}
+        {% endif %}
+      {% endfor %}
+    {% endif %}
+    {{ ns.e }}
 
 actions:
   - action: weather.get_forecasts

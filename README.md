@@ -63,6 +63,11 @@ blueprints/
     tile_hot_water            DHW cold, time to heat up, blocking times
     tile_maintenance          collective hints: filter, toner, backup, repairs, offline …
     train_next + tile_train   Deutsche Bahn delay (helper sensor + tile)
+    rain_soon + tile_rain     rain within 2 h (hourly forecast; helper sensor + tile)
+    weather_forecast_today    today's forecast for the 7" base view (sensor.ws_forecast)
+    weather_value             one attribute of the weather entity as a sensor (outdoor humidity …)
+                              → all weather blueprints find the weather entity themselves and fall
+                                back to another one if it is unavailable (e.g. Met.no 503)
   automation/wall_tiles/
     tile_tap_handler          tap on a tile → toggle / run action        (once)
     tiles_push                send tiles to one ESPHome display          (per display)
@@ -82,7 +87,7 @@ packages/                     only what needs fixed helpers or trigger-based tem
   wall_tiles/tiles_collector  (required) collects all sensor.tile_*
   wall_tiles/tile_waste       waste calendar (Waste Collection Schedule)
   wall_tiles/tile_calls       FRITZ!Box call monitor: incoming + missed calls (+ "Wer hat angerufen?")
-  wall_tiles/tile_rain        rain within 2 h (hourly forecast)
+  wall_tiles/tile_rain        rain within 2 h (two blueprint calls, nothing to adapt)
   wall_tiles/tile_school      WebUntis cancelled lessons
   voice/voice_shutters        shutters per room by voice, stop, tile "Rollo fährt"
   weather_station             sensor.ws_* for the 7" base view

@@ -1,0 +1,73 @@
+blueprint:
+  name: "Wall tiles: value from the weather entity"
+  description: >
+    Turns one attribute of the weather entity (humidity, pressure, wind …) into its own sensor,
+    e.g. the outdoor humidity for the wall display.
+    The weather entity is optional: empty = first available weather entity. A chosen entity that
+    is unavailable is replaced automatically, so switching the weather service needs no change here.
+    For the display name it "WS Outdoor Humidity" with unique_id ws_outdoor_humidity.
+  domain: template
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/template/wall_tiles/weather_value.yaml
+  input:
+    weather_entity:
+      name: Weather entity (optional)
+      description: Empty = automatic. Set it only if you have several weather integrations.
+      default: ""
+      selector: {entity: {domain: weather}}
+    attribute:
+      name: Attribute
+      default: humidity
+      selector:
+        select:
+          custom_value: true
+          options:
+            - {value: humidity, label: Luftfeuchtigkeit}
+            - {value: pressure, label: Luftdruck}
+            - {value: temperature, label: Temperatur}
+            - {value: apparent_temperature, label: Gefühlte Temperatur}
+            - {value: dew_point, label: Taupunkt}
+            - {value: wind_speed, label: Windgeschwindigkeit}
+            - {value: wind_gust_speed, label: Windböen}
+            - {value: cloud_coverage, label: Bewölkung}
+            - {value: uv_index, label: UV-Index}
+    unit:
+      name: Unit
+      default: "%"
+      selector: {text: {}}
+    device_class:
+      name: Device class
+      default: humidity
+      selector:
+        select:
+          options: [humidity, temperature, atmospheric_pressure, wind_speed]
+
+variables:
+  preferred: !input weather_entity
+  attr_: !input attribute
+
+sensor:
+  unit_of_measurement: !input unit
+  device_class: !input device_class
+  state_class: measurement
+  state: >
+    {% set ns = namespace(e='') %}
+    {% if preferred and state_attr(preferred, attr_) is number %}{% set ns.e = preferred %}
+    {% else %}
+      {% for s in states.weather if ns.e == '' and s.attributes.get(attr_) is number %}
+        {% set ns.e = s.entity_id %}
+      {% endfor %}
+    {% endif %}
+    {{ state_attr(ns.e, attr_) | float(none) if ns.e else none }}
+  availability: >
+    {{ (preferred and state_attr(preferred, attr_) is number)
+       or states.weather | selectattr('attributes.' ~ attr_, 'number') | list | count > 0 }}
+  attributes:
+    source: >
+      {% set ns = namespace(e='') %}
+      {% if preferred and state_attr(preferred, attr_) is number %}{% set ns.e = preferred %}
+      {% else %}
+        {% for s in states.weather if ns.e == '' and s.attributes.get(attr_) is number %}
+          {% set ns.e = s.entity_id %}
+        {% endfor %}
+      {% endif %}
+      {{ ns.e }}

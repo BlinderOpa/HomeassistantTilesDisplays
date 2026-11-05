@@ -4,7 +4,8 @@
 #
 # ── ADAPT ──────────────────────────────────────────────────────────────
 #   sensor.outdoor_temperature   outdoor temperature (any sensor; 4 occurrences in the max/min block)
-#   weather.home                 weather entity (outdoor humidity attribute + daily forecast)
+#   weather entity: nothing to do – the blueprints pick the first available one and fall back
+#                   automatically (e.g. Met.no 503). With several weather services set weather_entity.
 #   sensor.indoor_temperature / sensor.indoor_humidity   the room the display hangs in
 #   Display brightness: blueprint "Wall tiles: display brightness by time of day".
 template:
@@ -18,13 +19,13 @@ template:
         state: "{{ states('sensor.outdoor_temperature') | float(none) }}"
         availability: "{{ states('sensor.outdoor_temperature') | is_number }}"
 
-      - name: "WS Outdoor Humidity"
-        unique_id: ws_outdoor_humidity
-        unit_of_measurement: "%"
-        device_class: humidity
-        state_class: measurement
-        state: "{{ state_attr('weather.home', 'humidity') | float(none) }}"
-        availability: "{{ state_attr('weather.home', 'humidity') is number }}"
+  - name: "WS Outdoor Humidity"
+    unique_id: ws_outdoor_humidity
+    use_blueprint:
+      path: wall_tiles/weather_value.yaml
+      input:
+        # weather_entity: weather.home   # optional, only needed with several weather services
+        attribute: humidity
 
   # max/min outdoor since midnight (resets to the current value at 0:00)
   - triggers:
@@ -96,53 +97,14 @@ template:
           {% else %}gut{% endif %}
 
   # ---------- forecast today (every 15 min) ----------
-  - triggers:
-      - trigger: time_pattern
-        minutes: "/15"
-      - trigger: homeassistant
-        event: start
-      - trigger: event
-        event_type: event_template_reloaded
-    actions:
-      - action: weather.get_forecasts
-        target:
-          entity_id: weather.home
-        data:
-          type: daily
-        response_variable: wf
-    sensor:
-      # state = HA weather condition (sunny, rainy …); attributes for the display
-      - name: "WS Forecast"
-        unique_id: ws_forecast
-        icon: mdi:weather-partly-cloudy
-        state: "{{ ((wf['weather.home'].forecast | default([{}]))[0]).get('condition', 'unbekannt') }}"
-        attributes:
-          text: >
-            {% set c = ((wf['weather.home'].forecast | default([{}]))[0]).get('condition', '') %}
-            {{ {'sunny':'sonnig', 'clear-night':'klar', 'partlycloudy':'teils bewölkt',
-                'cloudy':'bewölkt', 'rainy':'Regen', 'pouring':'Starkregen',
-                'snowy':'Schnee', 'snowy-rainy':'Schneeregen', 'fog':'Nebel',
-                'hail':'Hagel', 'lightning':'Gewitter', 'lightning-rainy':'Gewitter',
-                'windy':'windig', 'windy-variant':'windig', 'exceptional':'Unwetter'}.get(c, '') }}
-          symbol: >
-            {% set c = ((wf['weather.home'].forecast | default([{}]))[0]).get('condition', '') %}
-            {{ {'sunny':'weather-sunny', 'clear-night':'weather-night',
-                'partlycloudy':'weather-partly-cloudy', 'cloudy':'weather-cloudy',
-                'rainy':'weather-rainy', 'pouring':'weather-pouring',
-                'snowy':'weather-snowy', 'snowy-rainy':'weather-snowy-rainy',
-                'fog':'weather-fog', 'hail':'weather-hail',
-                'lightning':'weather-lightning', 'lightning-rainy':'weather-lightning-rainy',
-                'windy':'weather-windy', 'windy-variant':'weather-windy',
-                'exceptional':'alert'}.get(c, 'weather-partly-cloudy') }}
-          temp_max: "{{ ((wf['weather.home'].forecast | default([{}]))[0]).get('temperature') }}"
-          temp_min: "{{ ((wf['weather.home'].forecast | default([{}]))[0]).get('templow') }}"
-          rain: >
-            {% set f = (wf['weather.home'].forecast | default([{}]))[0] %}
-            {% set p = f.get('precipitation_probability') %}
-            {% set mm = f.get('precipitation') %}
-            {% if p is not none %}{{ p | int }} %
-            {% elif mm is not none and mm | float(0) < 0.1 %}kein Regen
-            {% elif mm is not none %}{{ '%.1f' | format(mm | float) | replace('.', ',') }} mm{% endif %}
+  # state = HA weather condition (sunny, rainy …); attributes text, symbol, temp_max, temp_min, rain
+  - name: "WS Forecast"
+    unique_id: ws_forecast
+    use_blueprint:
+      path: wall_tiles/weather_forecast_today.yaml
+      # optional, only needed with several weather services:
+      # input:
+      #   weather_entity: weather.home
 
   # ---------- sun (HH:MM text, local time) ----------
   - sensor:

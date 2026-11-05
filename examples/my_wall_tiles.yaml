@@ -141,8 +141,9 @@ automation:
     alias: "Voice: weather and rain"
     use_blueprint:
       path: wall_tiles/voice_weather.yaml
-      input:
-        weather_entity: weather.home
+      # optional, only needed with several weather services:
+      # input:
+      #   weather_entity: weather.home
   - id: voice_energy
     alias: "Voice: battery, PV, laundry"
     use_blueprint:

@@ -1,0 +1,99 @@
+blueprint:
+  name: "Wall tiles: rain soon (helper sensor)"
+  description: >
+    Helper sensor for the tile "rain is coming". Reads the hourly forecast every 10 minutes.
+    State = minutes until rain starts (0 = current hour), -1 = no rain within the look-ahead.
+    Attributes: start (HH:MM), mm (sum over look-ahead + 1 h), raining (it rains right now),
+    source (weather entity actually used).
+    The weather entity is optional: empty = first available weather entity with an hourly
+    forecast. A chosen entity that is unavailable (e.g. Met.no answers 503) is replaced
+    automatically for that run, so switching the weather service needs no change here.
+    Name the entity e.g. "Rain Soon" → sensor.rain_soon.
+  domain: template
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/template/wall_tiles/rain_soon.yaml
+  input:
+    weather_entity:
+      name: Weather entity (optional)
+      description: Empty = automatic. Set it only if you have several weather integrations.
+      default: ""
+      selector: {entity: {domain: weather}}
+    look_ahead:
+      name: Look-ahead (hours)
+      default: 2
+      selector: {number: {min: 1, max: 6}}
+    min_mm:
+      name: An hour counts as wet from (mm)
+      default: 0.2
+      selector: {number: {min: 0, max: 5, step: 0.1}}
+    min_probability:
+      name: … or from probability (%)
+      default: 50
+      selector: {number: {min: 0, max: 100}}
+
+triggers:
+  - trigger: time_pattern
+    minutes: "/10"
+  - trigger: homeassistant
+    event: start
+  - trigger: event
+    event_type: event_template_reloaded
+
+variables:
+  preferred: !input weather_entity
+  look: !input look_ahead
+  wet_mm: !input min_mm
+  wet_p: !input min_probability
+  # preferred entity if available, otherwise the first available one with hourly forecast (feature 2)
+  src: >
+    {% set ns = namespace(e='') %}
+    {% if preferred and states(preferred) not in ['unknown', 'unavailable'] %}
+      {% set ns.e = preferred %}
+    {% else %}
+      {% for s in states.weather if s.state not in ['unknown', 'unavailable'] %}
+        {% if ns.e == '' and (s.attributes.get('supported_features', 0) | int(0)) | bitwise_and(2) %}
+          {% set ns.e = s.entity_id %}
+        {% endif %}
+      {% endfor %}
+    {% endif %}
+    {{ ns.e }}
+
+conditions:
+  - condition: template
+    value_template: "{{ src != '' }}"
+
+actions:
+  - action: weather.get_forecasts
+    target:
+      entity_id: "{{ src }}"
+    data:
+      type: hourly
+    response_variable: r
+    continue_on_error: true
+  - variables:
+      rs: >
+        {% set fc = r[src].forecast if r is defined and src in r else [] %}
+        {% set ns = namespace(m=-1, t='', s=0) %}
+        {% for f in fc %}
+          {% set t = as_local(as_datetime(f.datetime)) %}
+          {% if t + timedelta(hours=1) > now() %}
+            {% set wet = (f.get('precipitation') | float(0)) >= wet_mm | float
+                         or (f.get('precipitation_probability') | int(0)) >= wet_p | int %}
+            {% if ns.m == -1 and wet and t <= now() + timedelta(hours=look | int) %}
+              {% set ns.m = [((t - now()).total_seconds() / 60) | int, 0] | max %}
+              {% set ns.t = t.strftime('%H:%M') %}
+            {% endif %}
+            {% if t <= now() + timedelta(hours=look | int + 1) %}
+              {% set ns.s = ns.s + (f.get('precipitation') | float(0)) %}
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+        {{ {'m': ns.m, 'start': ns.t, 'mm': ns.s | round(1)} }}
+
+sensor:
+  icon: mdi:weather-rainy
+  state: "{{ rs.m }}"
+  attributes:
+    start: "{{ rs.start }}"
+    mm: "{{ rs.mm }}"
+    raining: "{{ states(src) in ['rainy', 'pouring', 'lightning-rainy', 'snowy-rainy', 'hail'] }}"
+    source: "{{ src }}"
