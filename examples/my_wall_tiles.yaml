@@ -66,6 +66,12 @@ automation:
       path: wall_tiles/tiles_push.yaml
       input:
         node_name: my-wall-display
+  - id: wall_calendar_push        # only with package wall_calendar.yaml + firmware wall-display-calendar.yaml
+    alias: "Wall display: send calendar"
+    use_blueprint:
+      path: wall_tiles/calendar_push.yaml
+      input:
+        node_name: my-wall-display
   - id: wall_weather_background
     alias: "Wall display: weather background"
     use_blueprint:

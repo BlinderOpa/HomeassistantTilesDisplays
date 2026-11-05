@@ -71,6 +71,7 @@ blueprints/
   automation/wall_tiles/
     tile_tap_handler          tap on a tile → toggle / run action        (once)
     tiles_push                send tiles to one ESPHome display          (per display)
+    calendar_push             send the week calendar to the wall display (with wall_calendar)
     display_brightness        day / evening / night brightness
     weather_background        faded photo behind the base view, chosen by the current weather
     appliance_done_detect     sets the "done" flag of an appliance

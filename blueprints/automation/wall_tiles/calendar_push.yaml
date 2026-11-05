@@ -1,0 +1,50 @@
+blueprint:
+  name: "Wall tiles: push week calendar to the wall display"
+  description: >
+    Sends the week calendar from sensor.wall_calendar (package wall_calendar.yaml) to the wall
+    display via its API action "set_calendar" – on every change, on HA start and when the device
+    reports "esphome.display_ready".
+    The display needs the optional firmware part esphome/wall-display-calendar.yaml,
+    otherwise the action does not exist.
+  domain: automation
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/automation/wall_tiles/calendar_push.yaml
+  input:
+    node_name:
+      name: ESPHome node name
+      description: >
+        As in the device YAML (esphome: name:), e.g. "wall-display".
+        The action called is esphome.<node_name with - replaced by _>_set_calendar.
+      selector:
+        text:
+    calendar_entity:
+      name: Calendar sensor
+      default: sensor.wall_calendar
+      selector: {entity: {domain: sensor}}
+
+mode: restart
+
+triggers:
+  - trigger: state
+    entity_id: !input calendar_entity
+    attribute: cal
+  - trigger: event
+    event_type: esphome.display_ready
+    event_data:
+      device: !input node_name
+  - trigger: homeassistant
+    event: start
+
+variables:
+  node: !input node_name
+  cal_e: !input calendar_entity
+  service: "esphome.{{ node | replace('-', '_') }}_set_calendar"
+
+conditions:
+  - "{{ state_attr(cal_e, 'cal') is not none }}"
+
+actions:
+  - delay: 3
+  - action: "{{ service }}"
+    continue_on_error: true   # device may be offline
+    data:
+      cal: "{{ state_attr(cal_e, 'cal') | to_json }}"

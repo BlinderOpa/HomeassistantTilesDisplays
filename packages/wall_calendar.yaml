@@ -23,7 +23,9 @@
 #   Tip: don't label timetable calendars (every lesson would show up), rather exams/homework.
 #
 # ── ADAPT ──────────────────────────────────────────────────────────────
-#   display_node (automation at the bottom): ESPHome node name of your wall display
+#   Nothing here. Sending to the display = blueprint "Wall tiles: push week calendar to the
+#   wall display" (automation/wall_tiles/calendar_push.yaml) with your ESPHome node name,
+#   see examples/my_wall_tiles.yaml.
 
 template:
   - triggers:
@@ -164,26 +166,3 @@ template:
             {% if l %}{{ l[0].name }}{{ ' · +' ~ (l | count - 1) ~ ' weitere' if l | count > 1 }}{% endif %}
           progress: -1
           tap: "none"
-
-automation:
-  - id: wall_calendar_push
-    alias: "Wall display: send calendar"
-    mode: restart
-    variables:
-      display_node: wall-display      # ── ADAPT: ESPHome node name of the wall display
-    triggers:
-      - trigger: state
-        entity_id: sensor.wall_calendar
-        attribute: cal
-      - trigger: event
-        event_type: esphome.display_ready
-      - trigger: homeassistant
-        event: start
-    conditions:
-      - "{{ trigger.platform != 'event' or trigger.event.data.device == display_node }}"
-    actions:
-      - delay: 3
-      - action: "esphome.{{ display_node | replace('-', '_') }}_set_calendar"
-        continue_on_error: true
-        data:
-          cal: "{{ state_attr('sensor.wall_calendar', 'cal') | to_json }}"
