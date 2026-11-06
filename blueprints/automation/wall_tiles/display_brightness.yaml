@@ -4,13 +4,18 @@ blueprint:
     Sets a display's brightness: bright during the day, dimmed after sunset, dark at night.
     Optionally switches the display's night mode during the night: backlight off,
     a tap wakes the display for a short time (wake time = number "Display Wachzeit" on the device).
+    Works for the 7" wall display and for the voice satellite C6 (leave brightness empty there).
     Runs at sunrise/sunset, at the night start/end times, on HA start and when the
     device reports esphome.display_ready.
   domain: automation
   source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/automation/wall_tiles/display_brightness.yaml
   input:
     brightness_entity:
-      name: Brightness (number entity of the display)
+      name: Brightness (number entity of the display, optional)
+      description: >
+        Leave empty for a device without brightness control (e.g. the voice satellite C6):
+        then only the night mode switch is set.
+      default: ""
       selector:
         entity:
           domain: number
@@ -85,11 +90,15 @@ variables:
     {% else %}{{ evening_ }}{% endif %}
 
 actions:
-  - action: number.set_value
-    target:
-      entity_id: "{{ ent }}"
-    data:
-      value: "{{ value }}"
+  - if:
+      - condition: template
+        value_template: "{{ ent not in [none, ''] }}"
+    then:
+      - action: number.set_value
+        target:
+          entity_id: "{{ ent }}"
+        data:
+          value: "{{ value }}"
   - if:
       - condition: template
         value_template: "{{ night_switch not in [none, ''] }}"

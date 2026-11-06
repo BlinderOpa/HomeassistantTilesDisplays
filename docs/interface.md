@@ -216,7 +216,7 @@ calendar; swipe right or 60 s → back. HA resends on change of `sensor.wall_cal
 The same package provides the tile `sensor.tile_calendar` (next event today, after 17:00 also
 tomorrow; prio 28, icon `calendar`) for the small tiles in the base view.
 
-### 4.8 Night mode (7")
+### 4.8 Night mode (7" and C6)
 
 The backlight of the 7" can only be switched on/off (no PWM), so dimming at night does not help much.
 Instead the device offers:
@@ -232,6 +232,14 @@ Also on in night mode: a tile with `status: alarm` (until it is gone), and `show
 `show_question` (for the wake time). When it goes dark, the 4×3 tile view is closed.
 HA switches the night mode via the blueprint `display_brightness.yaml` (input `night_mode_entity`).
 
+**C6:** same entities `Display Nachtmodus` and `Display Wachzeit` (5–600 s, default 30). The C6 backlight is
+dimmable and not paused, so it simply goes off after the wake time. The wake events are touch (that touch
+triggers nothing), the BOOT button, `show_answer`, `show_question` and a new tile with `status: alarm`;
+while the assistant, an answer or a question is active the display stays on. By day the number
+`Display-Timeout` (0 = never) switches the C6 off after that many idle seconds; at night the wake time
+applies instead. For the C6 add a second instance of the blueprint with `brightness_entity` empty,
+`node_name: voice-satellite-c6` and `night_mode_entity` = its `Display Nachtmodus` switch.
+
 ## 5. What each device implements
 
 | | S3 | C6 | 7" |
@@ -245,7 +253,7 @@ HA switches the night mode via the blueprint `display_brightness.yaml` (input `n
 | event `display_ready` | optional | optional | ✅ |
 | weather-station base view | – | – | ✅ |
 | `set_background` | – | – | ✅ |
-| night mode (switch "Display Nachtmodus", number "Display Wachzeit") | – | – | ✅ |
+| night mode (switch "Display Nachtmodus", number "Display Wachzeit") | – | ✅ | ✅ |
 | `set_calendar` | – | – | optional (calendar package) |
 
 ## Change rules
@@ -254,5 +262,6 @@ New fields only as optional fields with a default (old devices ignore unknown JS
 New icons go into 1.2 first, then into the devices. Incompatible changes bump the major version.
 
 ### Changelog
+- v1.10: night mode for the C6 (4.8): switch `Display Nachtmodus` and number `Display Wachzeit` like the 7". Blueprint `display_brightness`: `brightness_entity` is optional now. Only the C6 firmware changes.
 - v1.9: 7" night mode (4.8): backlight off at night, tap wakes it for "Display Wachzeit"; alarm tiles and popups wake it too. Blueprint `display_brightness` switches it (optional input). Only the 7" firmware changes.
 - v1.8: optional action `set_calendar` (4.7) and tile `sensor.tile_calendar`; columns via labels `Kalender <name>`. Existing devices unchanged.
