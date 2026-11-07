@@ -25,6 +25,13 @@ blueprint:
       name: Display title
       default: "Rollos"
       selector: {text: {}}
+    listen_again:
+      name: Listen again after the answer
+      description: >
+        The voice satellite listens once more, so a follow-up like "Rollo stop" works
+        without pressing the button again (voice satellite C6).
+      default: true
+      selector: {boolean: {}}
 
 mode: parallel
 
@@ -40,6 +47,7 @@ variables:
   t_close: !input tile_close
   t_open: !input tile_open
   title_: !input title
+  listen_: !input listen_again
   down: "{{ trigger.id == 'down' }}"
   act: "{{ state_attr(t_close if down else t_open, 'action') or '' }}"
 
@@ -63,6 +71,7 @@ actions:
       status: "{{ 'ok' if n == 0 else 'info' }}"
       icon: "{{ 'window-shutter' if down else 'window-shutter-open' }}"
       duration: 4
+      listen_again: "{{ listen_ }}"
   - set_conversation_response: >
       {% if n == 0 %}Die Rollos sind schon {{ 'unten' if down else 'oben' }}.
       {% else %}{{ 'Ein Rollo fährt' if n == 1 else n ~ ' Rollos fahren' }} {{ 'runter' if down else 'hoch' }}.{% endif %}

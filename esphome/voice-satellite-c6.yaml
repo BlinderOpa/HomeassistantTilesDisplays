@@ -16,8 +16,9 @@
 #   schicken können; die übrigen neuen Icons sind Kachel-Icons und fehlen hier
 #   (unbekanntes Icon wird zu "information").
 # Betriebsart: Push to Assistant (kein Wake Word)
-#   - Folgebefehle (Schalter in HA, Standard an): nach einer Antwort hört der Assistent
-#     weiter zu ("Rollo hoch", dann "Rollo stop"); Ende bei Stille oder "Abbrechen"
+#   - Folgebefehle: nur wenn Home Assistant es pro Sprachbefehl verlangt (Aktion
+#     listen_again, z. B. nach "Rollo hoch", damit "Rollo stop" folgen kann). Schalter
+#     "Folgebefehle" (Standard an) erlaubt das; Ende bei Stille oder "Abbrechen"
 #   - Display-Timeout (Regler in HA, 0 = nie aus): Display geht aus und wacht bei
 #     Berührung, BOOT-Taste, Antwort, Frage oder neuem Alarm-Kachel wieder auf
 #   - Nachtmodus (Schalter "Display Nachtmodus", von HA geschaltet): Display aus,
@@ -137,6 +138,12 @@ api:
         - script.execute:
             id: cancel_question_request
             q_id: !lambda 'return request_id;'
+
+    # Folgebefehl (Schnittstelle 4.9): Home Assistant verlangt nach einer Antwort,
+    # dass der Satellit noch einmal zuhört (ohne Variablen)
+    - action: listen_again
+      then:
+        - script.execute: listen_again_request
 
     # Schnittstelle 4.2: Kachelliste als JSON-Array (wie beim 7"-Display)
     - action: set_tiles
@@ -302,6 +309,11 @@ globals:
     restore_value: false
     initial_value: 'false'
   # Befehle in dieser Sitzung (für Folgebefehle) und Wächter gegen hängende Anzeige
+  # Sitzung gilt als Folge-Zuhören (Stille danach beendet leise, ohne Fehlermeldung)
+  - id: follow_mode
+    type: bool
+    restore_value: false
+    initial_value: 'false'
   - id: session_commands
     type: int
     restore_value: false
@@ -599,7 +611,8 @@ number:
     restore_value: true
     initial_value: 30
 
-# Nach einer Antwort weiter zuhören (Folgebefehle wie "Rollo stop")
+# Folgebefehle erlauben: nach einem Befehl, bei dem HA es verlangt, hört der Satellit noch
+# einmal zu (z. B. "Rollo hoch", dann "Rollo stop")
 switch:
   - platform: template
     name: "Folgebefehle"
@@ -625,6 +638,27 @@ switch:
 # Skripte
 # ----------------------------------------------------------------------------
 script:
+  # Nach der Sprachausgabe noch einmal zuhören (nur wenn HA es verlangt und der
+  # Schalter "Folgebefehle" an ist); 1,2 s Pause, damit der Nachhall nicht mitgehört wird
+  - id: listen_again_request
+    mode: restart
+    then:
+      - if:
+          condition:
+            switch.is_on: follow_up
+          then:
+            - wait_until:
+                condition:
+                  and:
+                    - not:
+                        voice_assistant.is_running:
+                    - not:
+                        speaker.is_playing: board_speaker
+                timeout: 20s
+            - delay: 1200ms
+            - lambda: 'id(follow_mode) = true;'
+            - script.execute: start_assistant
+
   # Display einschalten (falls aus) und Abschaltzeit neu starten
   - id: display_wake
     then:
@@ -693,18 +727,12 @@ script:
                   - script.execute: clear_response
                   - lambda: |-
                       id(assistant_active) = true;
-                      id(session_commands) = 0;
+                      id(session_commands) = id(follow_mode) ? 1 : 0;
+                      id(follow_mode) = false;
                       id(status_text) = "Höre zu...";
                   - script.execute: apply_response
                   - script.execute: session_watchdog
-                  # mit Folgebefehlen hört der Assistent nach jeder Antwort weiter zu
-                  - if:
-                      condition:
-                        switch.is_on: follow_up
-                      then:
-                        - voice_assistant.start_continuous:
-                      else:
-                        - voice_assistant.start:
+                  - voice_assistant.start:
           else:
             - lambda: 'id(status_text) = "Keine Verbindung";'
             - script.execute: apply_ui

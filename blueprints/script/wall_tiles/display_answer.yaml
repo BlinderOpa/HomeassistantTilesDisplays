@@ -49,6 +49,11 @@ fields:
   duration:
     description: "seconds, 0 = device default"
     example: 0
+  listen_again:
+    description: >
+      true = after the spoken answer the satellite listens once more (follow-up command, e.g.
+      "shutters up" then "stop"). Only devices with the API action listen_again react (C6).
+    example: false
 
 variables:
   devices_: !input devices
@@ -80,3 +85,7 @@ sequence:
             status: "{{ status | default('info') }}"
             icon: "{{ icon | default('information') }}"
             duration: "{{ duration | default(0) | int(0) }}"
+        - if: "{{ listen_again | default(false) | bool(false) }}"
+          then:
+            - action: "esphome.{{ repeat.item | replace('-', '_') }}_listen_again"
+              continue_on_error: true

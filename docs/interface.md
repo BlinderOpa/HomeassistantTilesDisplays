@@ -232,13 +232,24 @@ Also on in night mode: a tile with `status: alarm` (until it is gone), and `show
 `show_question` (for the wake time). When it goes dark, the 4×3 tile view is closed.
 HA switches the night mode via the blueprint `display_brightness.yaml` (input `night_mode_entity`).
 
-**C6:** same entities `Display Nachtmodus` and `Display Wachzeit` (5–600 s, default 30). The C6 backlight is
-dimmable and not paused, so it simply goes off after the wake time. The wake events are touch (that touch
+**C6:** same entities `Display Nachtmodus` and `Display Wachzeit` (5–600 s, default 30). The C6 backlight stays an
+ordinary dimmable light entity (`Display Hintergrundbeleuchtung`): its brightness is set there, and
+sleep or night mode only switch it off and on again, so the chosen brightness is kept. LVGL is not
+paused, so the display simply goes off after the wake time. The wake events are touch (that touch
 triggers nothing), the BOOT button, `show_answer`, `show_question` and a new tile with `status: alarm`;
 while the assistant, an answer or a question is active the display stays on. By day the number
 `Display-Timeout` (0 = never) switches the C6 off after that many idle seconds; at night the wake time
 applies instead. For the C6 add a second instance of the blueprint with `brightness_entity` empty,
 `node_name: voice-satellite-c6` and `night_mode_entity` = its `Display Nachtmodus` switch.
+
+### 4.9 Follow-up listening (C6)
+
+By default a satellite listens for exactly one command. A voice automation can ask for one more:
+`script.display_answer` has the optional field `listen_again` (default `false`). If it is `true`,
+HA calls the device's API action `listen_again` (no variables) after the answer. The C6 then waits
+until the spoken answer is over, pauses 1.2 s and listens again; silence ends the session quietly,
+a recognised command allows the next follow-up. Devices without the action ignore it. The switch
+`Folgebefehle` on the C6 (default on) can turn this off. Typical use: "Rollo hoch", then "Rollo stop".
 
 ## 5. What each device implements
 
@@ -262,6 +273,7 @@ New fields only as optional fields with a default (old devices ignore unknown JS
 New icons go into 1.2 first, then into the devices. Incompatible changes bump the major version.
 
 ### Changelog
+- v1.11: follow-up listening (4.9): optional field `listen_again` of `display_answer` and C6 action `listen_again`. The C6 no longer listens again after every answer by itself (the earlier, unreleased "continuous" behaviour), only when HA asks.
 - v1.10: night mode for the C6 (4.8): switch `Display Nachtmodus` and number `Display Wachzeit` like the 7". Blueprint `display_brightness`: `brightness_entity` is optional now. Only the C6 firmware changes.
 - v1.9: 7" night mode (4.8): backlight off at night, tap wakes it for "Display Wachzeit"; alarm tiles and popups wake it too. Blueprint `display_brightness` switches it (optional input). Only the 7" firmware changes.
 - v1.8: optional action `set_calendar` (4.7) and tile `sensor.tile_calendar`; columns via labels `Kalender <name>`. Existing devices unchanged.
