@@ -7,6 +7,8 @@ blueprint:
     set by voice or on the phone), so this automation has no day logic of its own.
 
     The sunrise stops as soon as all lights are switched off (e.g. with the dimmer at the bed).
+    Brightness-only lights (e.g. the display backlight of the S3 voice satellite) can be added too;
+    they only get the brightness, coloured / tunable lights also the colour temperature.
 
     It also manages the flag "special alarm active":
       - the special time is changed (e.g. on the phone) and lies in the future → flag on
@@ -118,6 +120,16 @@ actions:
           - variables:
               alarm: "{{ as_datetime(states(nx)).isoformat() }}"
               # remaining time until the alarm (shorter if a special alarm is set at short notice)
+              ct_lights: >
+                {% set ns = namespace(l=[]) %}
+                {% for e in lights_ %}
+                  {% set m = state_attr(e, 'supported_color_modes') or [] %}
+                  {% if m | select('in', ['color_temp', 'hs', 'xy', 'rgb', 'rgbw', 'rgbww']) | list | count > 0 %}
+                    {% set ns.l = ns.l + [e] %}
+                  {% endif %}
+                {% endfor %}
+                {{ ns.l if ct else [] }}
+              plain_lights: "{{ lights_ | reject('in', ct_lights) | list }}"
               steps: >
                 {% set left = (as_datetime(alarm) - now()).total_seconds() %}
                 {{ [(left / step_s | float) | round(0, 'ceil') | int, 1] | max }}
@@ -132,19 +144,21 @@ actions:
                     f: "{{ repeat.index / steps }}"
                     b: "{{ (b0 + (b1 - b0) * f) | round(0) | int }}"
                     k: "{{ ((k0 + (k1 - k0) * f) / 50) | round(0) | int * 50 }}"
-                - if: "{{ ct }}"
+                # lights with colour temperature get it, brightness-only lights (e.g. a display backlight) not
+                - if: "{{ ct and ct_lights | count > 0 }}"
                   then:
                     - action: light.turn_on
                       continue_on_error: true
-                      target: {entity_id: "{{ lights_ }}"}
+                      target: {entity_id: "{{ ct_lights }}"}
                       data:
                         brightness_pct: "{{ b }}"
                         color_temp_kelvin: "{{ k }}"
                         transition: "{{ step_s }}"
-                  else:
+                - if: "{{ plain_lights | count > 0 }}"
+                  then:
                     - action: light.turn_on
                       continue_on_error: true
-                      target: {entity_id: "{{ lights_ }}"}
+                      target: {entity_id: "{{ plain_lights }}"}
                       data:
                         brightness_pct: "{{ b }}"
                         transition: "{{ step_s }}"
