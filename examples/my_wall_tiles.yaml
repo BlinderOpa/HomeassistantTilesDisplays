@@ -54,6 +54,21 @@ input_boolean:
   laundry_done:
     name: "Laundry done"
     icon: mdi:washing-machine-alert
+  alarm_special:                       # alarm clock (optional)
+    name: "Special alarm active"
+    icon: mdi:alarm-plus
+
+input_datetime:                        # alarm clock (optional)
+  alarm_workday:
+    name: "Alarm workdays"
+    icon: mdi:alarm
+    has_date: false
+    has_time: true
+  alarm_special:
+    name: "Special alarm"
+    icon: mdi:alarm-plus
+    has_date: true
+    has_time: true
 
 automation:
   - id: wall_tiles_tap
@@ -212,6 +227,24 @@ automation:
         sentences_on: ["Arbeitsplatz [Steckdose] (an | einschalten)"]
         sentences_off: ["Arbeitsplatz [Steckdose] (aus | ausschalten)"]
         name: "Arbeitsplatz"
+  # alarm clock: special alarm by voice / phone, runs your existing wake automation
+  # (in that automation trigger at input_datetime.alarm_workday and add the condition
+  #  "{{ not state_attr('sensor.alarm_next', 'special_today') }}")
+  - id: alarm_special
+    alias: "Alarm: special alarm"
+    use_blueprint:
+      path: wall_tiles/alarm_special.yaml
+      input:
+        special_time: input_datetime.alarm_special
+        special_active: input_boolean.alarm_special
+        wake_automation: automation.wake_up_light
+  - id: voice_alarm
+    alias: "Voice: alarm clock"
+    use_blueprint:
+      path: wall_tiles/voice_alarm.yaml
+      input:
+        special_time: input_datetime.alarm_special
+        special_active: input_boolean.alarm_special
   - id: voice_shutters_group
     alias: "Voice: lower shutters up/down"
     use_blueprint:
@@ -446,3 +479,17 @@ template:
         title: "Arbeitsplatz"
         detail: "Büro"
         prio: 50
+
+  # --- alarm clock (helper sensor, no tile) ---
+  - name: "Alarm Next"
+    unique_id: alarm_next
+    use_blueprint:
+      path: wall_tiles/alarm_next.yaml
+      input:
+        workday_time: input_datetime.alarm_workday
+        special_time: input_datetime.alarm_special
+        special_active: input_boolean.alarm_special
+        holiday_today: binary_sensor.public_holiday
+        holiday_tomorrow: binary_sensor.public_holiday_tomorrow
+        vacation_today: binary_sensor.school_vacation
+        vacation_tomorrow: binary_sensor.school_vacation_tomorrow

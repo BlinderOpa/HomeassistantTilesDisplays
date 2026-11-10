@@ -12,7 +12,7 @@
 #     blättert, ohne Icon. Tippen auf die Kachel sendet esphome.display_tap
 #     (wie am 7"-Display; HA entscheidet, was passiert).
 #   Nicht für den C6 vorgesehen: Wetter-Grundansicht 4.5 (nur 7"-Display).
-#   Aus v1.3 übernommen: die Wetter-Icons, weil Sprachantworten zum Wetter sie
+#   Aus v1.13: alarm/alarm-off (Wecker). Aus v1.3 übernommen: die Wetter-Icons, weil Sprachantworten zum Wetter sie
 #   schicken können; die übrigen neuen Icons sind Kachel-Icons und fehlen hier
 #   (unbekanntes Icon wird zu "information").
 # Betriebsart: Push to Assistant (kein Wake Word)
@@ -905,7 +905,8 @@ script:
             "battery-alert", "power-plug", "pool", "door-open", "molecule-co2",
             "solar-power", "printer", "cart", "wifi", "bicycle-electric", "pump",
             "calendar", "lightbulb", "fire",
-            "weather-sunny", "weather-night", "weather-partly-cloudy", "weather-cloudy", "weather-rainy", "weather-pouring", "weather-snowy", "weather-snowy-rainy", "weather-fog", "weather-hail", "weather-lightning", "weather-lightning-rainy", "weather-windy"};
+            "weather-sunny", "weather-night", "weather-partly-cloudy", "weather-cloudy", "weather-rainy", "weather-pouring", "weather-snowy", "weather-snowy-rainy", "weather-fog", "weather-hail", "weather-lightning", "weather-lightning-rainy", "weather-windy",
+            "alarm", "alarm-off"};
           std::string n = i_name;
           bool found = false;
           for (auto k : known) {
@@ -1628,6 +1629,20 @@ script:
             - lvgl.image.update:
                 id: answer_img
                 src: img_weather_windy
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "alarm";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_alarm
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "alarm-off";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_alarm_off
 
   - id: clear_response
     then:
@@ -1905,6 +1920,16 @@ image:
     transparency: alpha_channel
   - file: mdi:weather-windy
     id: img_weather_windy
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:alarm
+    id: img_alarm
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:alarm-off
+    id: img_alarm_off
     resize: 40x40
     type: RGB565
     transparency: alpha_channel

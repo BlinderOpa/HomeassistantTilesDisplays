@@ -39,7 +39,7 @@ power-plug pool door-open molecule-co2 solar-power printer printer-3d printer-3d
 bicycle-electric pump calendar lightbulb fire flash wrench phone-ring phone-missed heat-pump fan-alert
 window-shutter window-shutter-open snowflake-alert weather-sunny weather-night weather-partly-cloudy
 weather-cloudy weather-rainy weather-pouring weather-snowy weather-snowy-heavy weather-snowy-rainy weather-fog
-weather-hail weather-lightning weather-lightning-rainy weather-windy`
+weather-hail weather-lightning weather-lightning-rainy weather-windy alarm alarm-off`
 
 ### 1.3 Text lengths
 
@@ -282,6 +282,7 @@ New fields only as optional fields with a default (old devices ignore unknown JS
 New icons go into 1.2 first, then into the devices. Incompatible changes bump the major version.
 
 ### Changelog
+- v1.13: icons `alarm` and `alarm-off` (1.2) for the voice blueprint "alarm clock"; only S3 and C6 firmware change (the 7" has no voice).
 - v1.12: display sleep and night mode for the S3 (4.8): number `Display-Timeout`, switch `Display Nachtmodus`, number `Display Wachzeit`; the backlight goes on briefly for every response. Only the S3 firmware changes.
 - v1.11: follow-up listening (4.9): optional field `listen_again` of `display_answer` and C6 action `listen_again`. The C6 no longer listens again after every answer by itself (the earlier, unreleased "continuous" behaviour), only when HA asks.
 - v1.10: night mode for the C6 (4.8): switch `Display Nachtmodus` and number `Display Wachzeit` like the 7". Blueprint `display_brightness`: `brightness_entity` is optional now. Only the C6 firmware changes.

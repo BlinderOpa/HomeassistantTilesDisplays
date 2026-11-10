@@ -1,0 +1,202 @@
+blueprint:
+  name: "Wall tiles voice: alarm clock"
+  description: >
+    Voice commands for the special alarm: set ("Wecker sechs Uhr dreißig", "Weck mich um halb sieben",
+    also "viertel nach / viertel vor / dreiviertel"), ask ("Wecker gestellt?") and clear ("Wecker aus").
+    The time is set to its next occurrence (today, otherwise tomorrow).
+
+    Speech-to-Phrase has no placeholders, so every number is written out in the sentences.
+    Own sentences must use the same number words: hours vier … zehn,
+    minutes fünf, zehn, fünfzehn, zwanzig, dreißig, vierzig, fünfundvierzig, fünfzig
+    (digits are understood as well, for other STT engines).
+
+    Needs the template blueprint "next alarm" (sensor.alarm_next) and the automation blueprint
+    "special alarm". The answer is shown only on the asking satellite (icons alarm / alarm-off).
+  domain: automation
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/automation/wall_tiles/voice_alarm.yaml
+  input:
+    special_time:
+      name: Special alarm (input_datetime with date and time)
+      selector: {entity: {domain: input_datetime}}
+    special_active:
+      name: Special alarm active (input_boolean)
+      selector: {entity: {domain: input_boolean}}
+    next_entity:
+      name: Next alarm sensor
+      default: sensor.alarm_next
+      selector: {entity: {domain: sensor}}
+    sentences_set:
+      name: Sentences "set alarm"
+      default:
+        - "Wecker [auf | um] (vier | fünf | sechs | sieben | acht | neun | zehn) Uhr [(fünf | zehn | fünfzehn | zwanzig | dreißig | vierzig | fünfundvierzig | fünfzig)]"
+        - "Weck mich [morgen] um (vier | fünf | sechs | sieben | acht | neun | zehn) Uhr [(fünf | zehn | fünfzehn | zwanzig | dreißig | vierzig | fünfundvierzig | fünfzig)]"
+        - "Wecker [auf | um] (viertel nach | halb | viertel vor | dreiviertel) (vier | fünf | sechs | sieben | acht | neun | zehn)"
+        - "Weck mich [morgen] um (viertel nach | halb | viertel vor | dreiviertel) (vier | fünf | sechs | sieben | acht | neun | zehn)"
+      selector: {text: {multiple: true}}
+    sentences_hint:
+      name: Sentences "set alarm" without time (answers with an example)
+      default: ["Wecker stellen"]
+      selector: {text: {multiple: true}}
+    sentences_query:
+      name: Sentences "is the alarm set?"
+      default:
+        - "Wecker"
+        - "[Ist der] Wecker gestellt"
+        - "Wann (klingelt | weckt) [mich] der Wecker"
+      selector: {text: {multiple: true}}
+    sentences_clear:
+      name: Sentences "clear special alarm"
+      default:
+        - "(Wecker | Sonderwecker) (aus | löschen | ausschalten)"
+        - "Kein Wecker"
+      selector: {text: {multiple: true}}
+
+mode: parallel
+
+triggers:
+  - trigger: conversation
+    id: set
+    command: !input sentences_set
+  - trigger: conversation
+    id: hint
+    command: !input sentences_hint
+  - trigger: conversation
+    id: query
+    command: !input sentences_query
+  - trigger: conversation
+    id: clear
+    command: !input sentences_clear
+
+variables:
+  sp_time: !input special_time
+  sp_on: !input special_active
+  nx: !input next_entity
+  sentence: "{{ (trigger.sentence | default('')) | lower }}"
+  day_names: ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag']
+  # spoken time → "HH:MM" ("" if not recognised)
+  hhmm: >
+    {% set hours = {'vier': 4, 'fünf': 5, 'sechs': 6, 'sieben': 7, 'acht': 8, 'neun': 9, 'zehn': 10,
+                    '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9, '10': 10} %}
+    {% set mins = {'fünf': 5, 'zehn': 10, 'fünfzehn': 15, 'zwanzig': 20, 'dreißig': 30, 'vierzig': 40,
+                   'fünfundvierzig': 45, 'fünfzig': 50,
+                   '05': 5, '5': 5, '10': 10, '15': 15, '20': 20, '30': 30, '40': 40, '45': 45, '50': 50} %}
+    {% set w = sentence.split() %}
+    {% set ns = namespace(h=-1, m=0) %}
+    {% if 'uhr' in w %}
+      {% set i = w.index('uhr') %}
+      {% set ns.h = hours.get(w[i - 1], -1) if i > 0 else -1 %}
+      {% if w | count > i + 1 %}{% set ns.m = mins.get(w[i + 1], 0) %}{% endif %}
+    {% elif w %}
+      {% set h = hours.get(w[-1], -1) %}
+      {% if h >= 0 %}
+        {% if 'dreiviertel' in sentence or 'viertel vor' in sentence %}{% set ns.h = h - 1 %}{% set ns.m = 45 %}
+        {% elif 'viertel nach' in sentence %}{% set ns.h = h %}{% set ns.m = 15 %}
+        {% elif 'halb' in sentence %}{% set ns.h = h - 1 %}{% set ns.m = 30 %}
+        {% endif %}
+      {% endif %}
+    {% endif %}
+    {{ '%02d:%02d' | format(ns.h, ns.m) if ns.h >= 0 else '' }}
+
+actions:
+  - choose:
+      # ---------------- set ----------------
+      - conditions: "{{ trigger.id == 'set' }}"
+        sequence:
+          - if: "{{ hhmm == '' }}"
+            then:
+              - set_conversation_response: "Die Uhrzeit habe ich nicht verstanden."
+              - stop: "time not recognised"
+          - variables:
+              target_ts: >
+                {% set t = today_at(hhmm) %}
+                {{ as_timestamp(t if t > now() + timedelta(minutes=1) else t + timedelta(days=1)) }}
+              day: >
+                {% set t = as_datetime(target_ts | timestamp_local) %}
+                {% set d = (t.date() - now().date()).days %}
+                {{ 'heute' if d == 0 else ('morgen' if d == 1 else day_names[t.weekday()]) }}
+              spoken: >
+                {% set t = as_datetime(target_ts | timestamp_local) %}
+                {{ t.hour }} Uhr{{ (' ' ~ t.minute) if t.minute else '' }}
+          - action: input_datetime.set_datetime
+            target:
+              entity_id: "{{ sp_time }}"
+            data:
+              timestamp: "{{ target_ts }}"
+          - action: input_boolean.turn_on
+            target:
+              entity_id: "{{ sp_on }}"
+          - action: script.display_answer
+            continue_on_error: true
+            data:
+              target: "{{ trigger.device_id }}"
+              title: "Wecker {{ day if day in ['heute', 'morgen'] else day[:2] }}"
+              value: "{{ hhmm }}"
+              detail: "Sonderwecker"
+              status: ok
+              icon: alarm
+              duration: 5
+          - set_conversation_response: "Wecker gestellt auf {{ day }}, {{ spoken }}."
+
+      # ---------------- hint ----------------
+      - conditions: "{{ trigger.id == 'hint' }}"
+        sequence:
+          - set_conversation_response: "Sag zum Beispiel: Wecker sechs Uhr dreißig, oder: Weck mich um halb sieben."
+
+      # ---------------- clear ----------------
+      - conditions: "{{ trigger.id == 'clear' }}"
+        sequence:
+          - variables:
+              was_on: "{{ state_attr(nx, 'special') not in [none, ''] }}"
+          - action: input_boolean.turn_off
+            target:
+              entity_id: "{{ sp_on }}"
+          - action: script.display_answer
+            continue_on_error: true
+            data:
+              target: "{{ trigger.device_id }}"
+              title: "Sonderwecker"
+              value: "{{ 'gelöscht' if was_on else 'keiner' }}"
+              status: "{{ 'ok' if was_on else 'info' }}"
+              icon: alarm-off
+              duration: 4
+          - set_conversation_response: >
+              {% if was_on %}Der Sonderwecker ist gelöscht. Der normale Wecker bleibt.
+              {% else %}Es war kein Sonderwecker gestellt.{% endif %}
+
+      # ---------------- query ----------------
+      - conditions: "{{ trigger.id == 'query' }}"
+        sequence:
+          - variables:
+              nv: "{{ states(nx) }}"
+              is_set: "{{ as_datetime(nv, none) is not none }}"
+              special: "{{ is_set and nv == state_attr(nx, 'special') }}"
+              day: >
+                {% set t = as_datetime(nv, none) %}
+                {% if t is not none %}
+                  {% set t = as_local(t) %}
+                  {% set d = (t.date() - now().date()).days %}
+                  {{ 'heute' if d == 0 else ('morgen' if d == 1 else day_names[t.weekday()]) }}
+                {% endif %}
+              hm: >
+                {% set t = as_datetime(nv, none) %}
+                {{ as_local(t).strftime('%H:%M') if t is not none else '' }}
+              spoken: >
+                {% set t = as_datetime(nv, none) %}
+                {% if t is not none %}{% set t = as_local(t) %}{{ t.hour }} Uhr{{ (' ' ~ t.minute) if t.minute else '' }}{% endif %}
+              reason: >
+                {{ {'weekend': 'Morgen ist Wochenende', 'holiday': 'Morgen ist Feiertag',
+                    'vacation': 'Morgen sind Ferien'}.get((state_attr(nx, 'reason_tomorrow') or '') | trim, '') }}
+          - action: script.display_answer
+            continue_on_error: true
+            data:
+              target: "{{ trigger.device_id }}"
+              title: >
+                {% if is_set %}Wecker {{ day if day in ['heute', 'morgen'] else day[:2] }}{% else %}Wecker{% endif %}
+              value: "{{ hm if is_set else 'aus' }}"
+              detail: "{{ ('Sonderwecker' if special else 'werktags') if is_set else reason }}"
+              status: "{{ 'ok' if is_set else 'off' }}"
+              icon: "{{ 'alarm' if is_set else 'alarm-off' }}"
+          - set_conversation_response: >
+              {% if is_set %}Der Wecker klingelt {{ day }} um {{ spoken }}{{ ', Sonderwecker' if special else '' }}.
+              {% elif reason %}{{ reason }}, kein Wecker gestellt.
+              {% else %}Es ist kein Wecker gestellt.{% endif %}

@@ -66,6 +66,7 @@ blueprints/
     rain_soon + tile_rain     rain within 2 h (hourly forecast; helper sensor + tile)
     weather_forecast_today    today's forecast for the 7" base view (sensor.ws_forecast)
     weather_value             one attribute of the weather entity as a sensor (outdoor humidity …)
+    alarm_next                next alarm today/tomorrow: regular workday alarm + one-off special alarm
                               → all weather blueprints find the weather entity themselves and fall
                                 back to another one if it is unavailable (e.g. Met.no 503)
   automation/wall_tiles/
@@ -80,6 +81,8 @@ blueprints/
     voice_shutters_group      "Untere Rollos runter"
     voice_appliance · voice_charging_plug · voice_3d_printer · voice_waste
     voice_train · voice_weather · voice_energy
+    alarm_special             runs your wake automation at the special alarm, resets the flag
+    voice_alarm               "Wecker sechs Uhr dreißig" · "Wecker gestellt?" · "Wecker aus"
   script/wall_tiles/
     display_answer            → script.display_answer (required)
     shutters_group            open / close a group, one shutter only partially

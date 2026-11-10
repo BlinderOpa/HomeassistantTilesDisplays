@@ -1,0 +1,112 @@
+blueprint:
+  name: "Wall tiles: next alarm (helper sensor)"
+  description: >
+    Helper sensor for a light alarm clock with a regular workday alarm and a one-off
+    "special" alarm (set by voice or on the phone).
+
+    State = time of the next alarm today or tomorrow (device class timestamp), unknown if none.
+    The regular alarm counts on the selected weekdays unless the day is a holiday or vacation day.
+    On a day with a special alarm the regular alarm of that day is dropped.
+
+    Attributes:
+      special          – time of the pending special alarm (ISO) or ""
+      special_today    – true from setting a special alarm for today until the reset time of the
+                         automation blueprint "special alarm" → use it as condition in your own
+                         wake automation, so the regular alarm does not ring a second time
+      reason_tomorrow  – why there is no regular alarm tomorrow: weekend | holiday | vacation | ""
+      workday_time     – regular alarm as "HH:MM"
+
+    Used by the voice blueprint "alarm clock". Name the entity e.g. "Alarm Next" → sensor.alarm_next.
+  domain: template
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/template/wall_tiles/alarm_next.yaml
+  input:
+    workday_time:
+      name: Regular alarm time (input_datetime, time only)
+      selector: {entity: {domain: input_datetime}}
+    weekdays:
+      name: Weekdays of the regular alarm
+      default: [mon, tue, wed, thu, fri]
+      selector:
+        select:
+          multiple: true
+          options:
+            - {label: Monday, value: mon}
+            - {label: Tuesday, value: tue}
+            - {label: Wednesday, value: wed}
+            - {label: Thursday, value: thu}
+            - {label: Friday, value: fri}
+            - {label: Saturday, value: sat}
+            - {label: Sunday, value: sun}
+    special_time:
+      name: Special alarm (input_datetime with date and time)
+      selector: {entity: {domain: input_datetime}}
+    special_active:
+      name: Special alarm active (input_boolean)
+      selector: {entity: {domain: input_boolean}}
+    holiday_today:
+      name: Optional binary sensor "public holiday today"
+      default: ""
+      selector: {entity: {domain: binary_sensor}}
+    holiday_tomorrow:
+      name: Optional binary sensor "public holiday tomorrow"
+      default: ""
+      selector: {entity: {domain: binary_sensor}}
+    vacation_today:
+      name: Optional binary sensor "vacation today"
+      default: ""
+      selector: {entity: {domain: binary_sensor}}
+    vacation_tomorrow:
+      name: Optional binary sensor "vacation tomorrow"
+      default: ""
+      selector: {entity: {domain: binary_sensor}}
+
+variables:
+  wd_time: !input workday_time
+  wd_days: !input weekdays
+  sp_time: !input special_time
+  sp_on: !input special_active
+  hol0: !input holiday_today
+  hol1: !input holiday_tomorrow
+  vac0: !input vacation_today
+  vac1: !input vacation_tomorrow
+
+sensor:
+  icon: mdi:alarm
+  device_class: timestamp
+  state: >
+    {% set days = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] %}
+    {% set ns = namespace(l=[], s=none) %}
+    {% set ts = state_attr(sp_time, 'timestamp') %}
+    {% if is_state(sp_on, 'on') and ts is number %}
+      {% set ns.s = as_datetime(ts | timestamp_local) %}
+      {% if ns.s > now() %}{% set ns.l = ns.l + [ns.s] %}{% endif %}
+    {% endif %}
+    {% set w = states(wd_time) %}
+    {% if w not in ['unknown', 'unavailable', ''] %}
+      {% for d, free in [(0, is_state(hol0, 'on') or is_state(vac0, 'on')),
+                         (1, is_state(hol1, 'on') or is_state(vac1, 'on'))] %}
+        {% set t = today_at(w) + timedelta(days=d) %}
+        {% if days[t.weekday()] in wd_days and not free and t > now()
+              and not (ns.s is not none and ns.s.date() == t.date()) %}
+          {% set ns.l = ns.l + [t] %}
+        {% endif %}
+      {% endfor %}
+    {% endif %}
+    {{ (ns.l | min).isoformat() if ns.l else none }}
+  attributes:
+    special: >
+      {% set ts = state_attr(sp_time, 'timestamp') %}
+      {% if is_state(sp_on, 'on') and ts is number and as_datetime(ts | timestamp_local) > now() %}
+        {{ as_datetime(ts | timestamp_local).isoformat() }}
+      {% endif %}
+    special_today: >
+      {% set ts = state_attr(sp_time, 'timestamp') %}
+      {{ is_state(sp_on, 'on') and ts is number
+         and (ts | timestamp_custom('%Y-%m-%d')) == (now().date() | string) }}
+    reason_tomorrow: >
+      {% set days = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] %}
+      {% if days[(now() + timedelta(days=1)).weekday()] not in wd_days %}weekend
+      {% elif is_state(hol1, 'on') %}holiday
+      {% elif is_state(vac1, 'on') %}vacation
+      {% endif %}
+    workday_time: "{{ states(wd_time)[:5] if states(wd_time) not in ['unknown', 'unavailable'] else '' }}"
