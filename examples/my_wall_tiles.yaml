@@ -227,17 +227,16 @@ automation:
         sentences_on: ["Arbeitsplatz [Steckdose] (an | einschalten)"]
         sentences_off: ["Arbeitsplatz [Steckdose] (aus | ausschalten)"]
         name: "Arbeitsplatz"
-  # alarm clock: special alarm by voice / phone, runs your existing wake automation
-  # (in that automation trigger at input_datetime.alarm_workday and add the condition
-  #  "{{ not state_attr('sensor.alarm_next', 'special_today') }}")
-  - id: alarm_special
-    alias: "Alarm: special alarm"
+  # alarm clock: sunrise light at the workday alarm or the special alarm (voice / phone)
+  - id: wake_light
+    alias: "Alarm: wake-up light"
     use_blueprint:
-      path: wall_tiles/alarm_special.yaml
+      path: wall_tiles/wake_light.yaml
       input:
+        lights: [light.bedroom_window_strip]
+        ramp_minutes: 30
         special_time: input_datetime.alarm_special
         special_active: input_boolean.alarm_special
-        wake_automation: automation.wake_up_light
   - id: voice_alarm
     alias: "Voice: alarm clock"
     use_blueprint:

@@ -5,14 +5,14 @@ blueprint:
     "special" alarm (set by voice or on the phone).
 
     State = time of the next alarm today or tomorrow (device class timestamp), unknown if none.
+    This is the moment the wake-up light is fully on (blueprint "wake-up light" starts earlier).
     The regular alarm counts on the selected weekdays unless the day is a holiday or vacation day.
     On a day with a special alarm the regular alarm of that day is dropped.
 
     Attributes:
       special          – time of the pending special alarm (ISO) or ""
       special_today    – true from setting a special alarm for today until the reset time of the
-                         automation blueprint "special alarm" → use it as condition in your own
-                         wake automation, so the regular alarm does not ring a second time
+                         blueprint "wake-up light" (the regular alarm of that day is dropped)
       reason_tomorrow  – why there is no regular alarm tomorrow: weekend | holiday | vacation | ""
       workday_time     – regular alarm as "HH:MM"
 

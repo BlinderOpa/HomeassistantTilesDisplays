@@ -1,0 +1,35 @@
+# Dashboard card: alarm clock (core cards only, no HACS)
+# Dashboard → Edit → Add card → Manual, paste everything below this comment block.
+#
+# Top:    next alarm (big), today/tomorrow, regular or special alarm;
+#         without an alarm: "kein Wecker" and the reason for tomorrow (weekend, holiday, vacation).
+# Bottom: set the workday time and the special alarm. A special time in the future switches
+#         the special alarm on by itself (blueprint wake_light).
+#
+# Needs: sensor.alarm_next (template blueprint alarm_next) and the three helpers from
+#        examples/my_wall_tiles.yaml – adapt the entity ids if yours differ.
+type: vertical-stack
+cards:
+  - type: markdown
+    content: >
+      {% set t = as_datetime(states('sensor.alarm_next'), none) %}
+      {% set sp = state_attr('sensor.alarm_next', 'special') %}
+      {% set r = {'weekend': 'Wochenende', 'holiday': 'Feiertag', 'vacation': 'Ferien'}
+                 .get((state_attr('sensor.alarm_next', 'reason_tomorrow') or '') | trim, '') %}
+      {% if t is not none %}
+        {% set t = as_local(t) %}
+        {% set d = (t.date() - now().date()).days %}
+        ## ⏰ {{ t.strftime('%H:%M') }} Uhr
+        {{ 'heute' if d == 0 else 'morgen' }}{{ ' · Sonderwecker' if sp and states('sensor.alarm_next') == sp else ' · werktags' }}
+      {% else %}
+        ## 💤 kein Wecker
+        {{ 'Morgen: ' ~ r if r else '' }}
+      {% endif %}
+  - type: entities
+    entities:
+      - entity: input_datetime.alarm_workday
+        name: Werktags
+      - entity: input_boolean.alarm_special
+        name: Sonderwecker aktiv
+      - entity: input_datetime.alarm_special
+        name: Sonderwecker

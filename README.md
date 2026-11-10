@@ -81,7 +81,7 @@ blueprints/
     voice_shutters_group      "Untere Rollos runter"
     voice_appliance · voice_charging_plug · voice_3d_printer · voice_waste
     voice_train · voice_weather · voice_energy
-    alarm_special             runs your wake automation at the special alarm, resets the flag
+    wake_light                sunrise light alarm, follows alarm_next (workdays + special alarm)
     voice_alarm               "Wecker sechs Uhr dreißig" · "Wecker gestellt?" · "Wecker aus"
   script/wall_tiles/
     display_answer            → script.display_answer (required)
@@ -98,6 +98,7 @@ packages/                     only what needs fixed helpers or trigger-based tem
   weather_background          shell command that picks + prepares the background photo (ffmpeg)
   wall_calendar               optional: week calendar page (one column per label "Kalender <name>") + tile_calendar
 examples/my_wall_tiles.yaml   YOUR configuration: all blueprint calls in one package
+examples/dashboard_alarm.yaml dashboard card for the alarm clock (next alarm + set times)
 esphome/                      device firmware (ESPHome + LVGL) + examples/ for your device files
 docs/interface.md             the contract between HA and the devices
 tools/check_private.sh        scan for private data before you push

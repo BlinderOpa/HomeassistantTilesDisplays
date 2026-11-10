@@ -1,0 +1,166 @@
+blueprint:
+  name: "Wall tiles: wake-up light (sunrise)"
+  description: >
+    Light alarm clock: the lights fade in like a sunrise and reach the end brightness at the
+    alarm time. WHEN to wake comes only from the helper sensor of the template blueprint
+    "next alarm" (sensor.alarm_next: workdays, holidays, vacation and the one-off special alarm
+    set by voice or on the phone), so this automation has no day logic of its own.
+
+    The sunrise stops as soon as all lights are switched off (e.g. with the dimmer at the bed).
+
+    It also manages the flag "special alarm active":
+      - the special time is changed (e.g. on the phone) and lies in the future → flag on
+      - at the reset time (default 12:00) and after a restart: special time in the past → flag off
+        (until then the regular alarm of that day stays suppressed).
+  domain: automation
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/automation/wall_tiles/wake_light.yaml
+  input:
+    next_alarm:
+      name: Next alarm sensor
+      default: sensor.alarm_next
+      selector: {entity: {domain: sensor}}
+    lights:
+      name: Lights
+      selector: {entity: {domain: light, multiple: true}}
+    sunrise:
+      name: Sunrise
+      icon: mdi:weather-sunset-up
+      input:
+        ramp_minutes:
+          name: Duration of the sunrise (minutes before the alarm time)
+          default: 30
+          selector: {number: {min: 1, max: 90, unit_of_measurement: min}}
+        step_seconds:
+          name: Seconds per step
+          default: 30
+          selector: {number: {min: 5, max: 120, unit_of_measurement: s}}
+        start_brightness:
+          name: Start brightness
+          default: 1
+          selector: {number: {min: 1, max: 100, unit_of_measurement: "%"}}
+        end_brightness:
+          name: End brightness
+          default: 100
+          selector: {number: {min: 1, max: 100, unit_of_measurement: "%"}}
+        use_color_temp:
+          name: Change colour temperature (only for tunable white / colour lights)
+          default: true
+          selector: {boolean: {}}
+        start_kelvin:
+          name: Start colour temperature
+          default: 2200
+          selector: {number: {min: 1500, max: 6500, step: 100, unit_of_measurement: K}}
+        end_kelvin:
+          name: End colour temperature
+          default: 4000
+          selector: {number: {min: 1500, max: 6500, step: 100, unit_of_measurement: K}}
+        off_after:
+          name: Switch off after the alarm time (0 = stay on)
+          default: 0
+          selector: {number: {min: 0, max: 240, unit_of_measurement: min}}
+    special:
+      name: Special alarm flag
+      icon: mdi:alarm-plus
+      input:
+        special_time:
+          name: Special alarm (input_datetime with date and time)
+          selector: {entity: {domain: input_datetime}}
+        special_active:
+          name: Special alarm active (input_boolean)
+          selector: {entity: {domain: input_boolean}}
+        reset_time:
+          name: Reset time on the day of the special alarm
+          default: "12:00:00"
+          selector: {time: {}}
+
+mode: parallel
+max: 3
+
+trigger_variables:
+  nx: !input next_alarm
+  lead: !input ramp_minutes
+
+triggers:
+  # true from "alarm time − ramp" until the alarm time; afterwards the sensor jumps to the next alarm
+  - trigger: template
+    value_template: >
+      {% set t = as_datetime(states(nx), none) %}
+      {{ t is not none and now() >= t - timedelta(minutes=lead | int) and now() < t }}
+    id: wake
+  - trigger: state
+    entity_id: !input special_time
+    id: changed
+  - trigger: time
+    at: !input reset_time
+    id: cleanup
+  - trigger: homeassistant
+    event: start
+    id: cleanup
+
+variables:
+  lights_: !input lights
+  step_s: !input step_seconds
+  b0: !input start_brightness
+  b1: !input end_brightness
+  ct: !input use_color_temp
+  k0: !input start_kelvin
+  k1: !input end_kelvin
+  off_min: !input off_after
+  sp_time: !input special_time
+  sp_on: !input special_active
+  ts: "{{ state_attr(sp_time, 'timestamp') | float(0) }}"
+
+actions:
+  - choose:
+      # ---------------- sunrise ----------------
+      - conditions: "{{ trigger.id == 'wake' }}"
+        sequence:
+          - variables:
+              alarm: "{{ as_datetime(states(nx)).isoformat() }}"
+              # remaining time until the alarm (shorter if a special alarm is set at short notice)
+              steps: >
+                {% set left = (as_datetime(alarm) - now()).total_seconds() %}
+                {{ [(left / step_s | float) | round(0, 'ceil') | int, 1] | max }}
+          - repeat:
+              count: "{{ steps }}"
+              sequence:
+                # stop when someone switched all lights off during the sunrise
+                - if: "{{ repeat.index > 1 and lights_ | select('is_state', 'on') | list | count == 0 }}"
+                  then:
+                    - stop: "lights switched off – sunrise cancelled"
+                - variables:
+                    f: "{{ repeat.index / steps }}"
+                    b: "{{ (b0 + (b1 - b0) * f) | round(0) | int }}"
+                    k: "{{ ((k0 + (k1 - k0) * f) / 50) | round(0) | int * 50 }}"
+                - if: "{{ ct }}"
+                  then:
+                    - action: light.turn_on
+                      continue_on_error: true
+                      target: {entity_id: "{{ lights_ }}"}
+                      data:
+                        brightness_pct: "{{ b }}"
+                        color_temp_kelvin: "{{ k }}"
+                        transition: "{{ step_s }}"
+                  else:
+                    - action: light.turn_on
+                      continue_on_error: true
+                      target: {entity_id: "{{ lights_ }}"}
+                      data:
+                        brightness_pct: "{{ b }}"
+                        transition: "{{ step_s }}"
+                - delay: {seconds: "{{ step_s }}"}
+          - if: "{{ off_min | int > 0 }}"
+            then:
+              - delay: {minutes: "{{ off_min | int }}"}
+              - action: light.turn_off
+                target: {entity_id: "{{ lights_ }}"}
+
+      # ---------------- special alarm flag ----------------
+      - conditions: "{{ trigger.id == 'changed' and ts > as_timestamp(now()) }}"
+        sequence:
+          - action: input_boolean.turn_on
+            target: {entity_id: "{{ sp_on }}"}
+      - conditions: "{{ trigger.id == 'cleanup' and ts < as_timestamp(now()) and is_state(sp_on, 'on') }}"
+        sequence:
+          - action: input_boolean.turn_off
+            target: {entity_id: "{{ sp_on }}"}
