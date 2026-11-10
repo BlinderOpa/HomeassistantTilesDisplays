@@ -1,4 +1,4 @@
-# Interface: Home Assistant ↔ displays (v1.9)
+# Interface: Home Assistant ↔ displays (v1.12)
 
 Applies to every device that shows tiles or answers. Reference devices:
 
@@ -216,7 +216,7 @@ calendar; swipe right or 60 s → back. HA resends on change of `sensor.wall_cal
 The same package provides the tile `sensor.tile_calendar` (next event today, after 17:00 also
 tomorrow; prio 28, icon `calendar`) for the small tiles in the base view.
 
-### 4.8 Night mode (7" and C6)
+### 4.8 Night mode and display sleep (7", C6, S3)
 
 The backlight of the 7" can only be switched on/off (no PWM), so dimming at night does not help much.
 Instead the device offers:
@@ -242,6 +242,15 @@ while the assistant, an answer or a question is active the display stays on. By 
 applies instead. For the C6 add a second instance of the blueprint with `brightness_entity` empty,
 `node_name: voice-satellite-c6` and `night_mode_entity` = its `Display Nachtmodus` switch.
 
+**S3:** works like the C6, without touch. Entities: number `Display-Timeout` (0 = never, default 30 s),
+switch `Display Nachtmodus`, number `Display Wachzeit` (default 30 s); brightness stays on the light
+`Display Helligkeit`. Wake events: wake word / start of listening, spoken answer, `show_answer`
+(already when it arrives during speech), `show_question`, any of the three buttons and OTA. While the
+assistant, an answer, a question or an update is active the display stays on, then 5 s more. After the
+spoken answer the timeout starts again, so the sentence stays readable. For night mode add an instance
+of the blueprint with `brightness_entity` empty, `node_name: voice-satellite-s3` and its
+`Display Nachtmodus` switch.
+
 ### 4.9 Follow-up listening (C6)
 
 By default a satellite listens for exactly one command. A voice automation can ask for one more:
@@ -259,12 +268,12 @@ a recognised command allows the next follow-up. Devices without the action ignor
 | `show_question` / `cancel_question` | ✅ buttons | ✅ | ✅ |
 | `set_tiles` | – | ✅ swipe, no icon | ✅ |
 | event `display_tap` | – | ✅ | ✅ |
-| display sleep (number "Display-Timeout", 0 = never) | – | ✅ wakes on touch, button, answer, question, new alarm tile | – |
+| display sleep (number "Display-Timeout", 0 = never) | ✅ wakes on wake word, answer, question, button | ✅ wakes on touch, button, answer, question, new alarm tile | – |
 | follow-up commands (switch "Folgebefehle") | – | ✅ keeps listening after an answer | – |
 | event `display_ready` | optional | optional | ✅ |
 | weather-station base view | – | – | ✅ |
 | `set_background` | – | – | ✅ |
-| night mode (switch "Display Nachtmodus", number "Display Wachzeit") | – | ✅ | ✅ |
+| night mode (switch "Display Nachtmodus", number "Display Wachzeit") | ✅ | ✅ | ✅ |
 | `set_calendar` | – | – | optional (calendar package) |
 
 ## Change rules
@@ -273,6 +282,7 @@ New fields only as optional fields with a default (old devices ignore unknown JS
 New icons go into 1.2 first, then into the devices. Incompatible changes bump the major version.
 
 ### Changelog
+- v1.12: display sleep and night mode for the S3 (4.8): number `Display-Timeout`, switch `Display Nachtmodus`, number `Display Wachzeit`; the backlight goes on briefly for every response. Only the S3 firmware changes.
 - v1.11: follow-up listening (4.9): optional field `listen_again` of `display_answer` and C6 action `listen_again`. The C6 no longer listens again after every answer by itself (the earlier, unreleased "continuous" behaviour), only when HA asks.
 - v1.10: night mode for the C6 (4.8): switch `Display Nachtmodus` and number `Display Wachzeit` like the 7". Blueprint `display_brightness`: `brightness_entity` is optional now. Only the C6 firmware changes.
 - v1.9: 7" night mode (4.8): backlight off at night, tap wakes it for "Display Wachzeit"; alarm tiles and popups wake it too. Blueprint `display_brightness` switches it (optional input). Only the 7" firmware changes.

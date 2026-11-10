@@ -23,6 +23,11 @@
 #   - "Okay Nabu" erscheint erst, wenn Home Assistant verbunden ist
 #   - Lange Sprechtexte laufen im Antwortfeld langsam durch
 #   - OTA: Updates per WLAN aus dem ESPHome-Builder, Fortschritt auf dem Display
+#   - Display-Timeout (Schnittstelle 4.8): Hintergrundbeleuchtung geht nach
+#     "Display-Timeout" Sekunden aus (0 = nie aus) und kurz an bei Wake Word,
+#     Sprachausgabe, show_answer, show_question, Tastendruck und OTA.
+#     Nachtmodus (Schalter "Display Nachtmodus", von HA geschaltet): stattdessen
+#     "Display Wachzeit" Sekunden. Die Helligkeit bleibt dabei erhalten.
 #
 # In Home Assistant muss beim Gerät "Gerät darf Home-Assistant-Aktionen
 # ausführen" aktiviert sein, sonst kommen die Events nicht an.
@@ -52,6 +57,7 @@ esphome:
     # Wake-Word-Erkennung erst starten, wenn alles andere läuft
     - priority: -100
       then:
+        - script.execute: display_wake
         - micro_wake_word.start:
 
 esp32:
@@ -90,6 +96,7 @@ ota:
       - lambda: |-
           id(ota_running) = true;
           id(status_text) = "Update 0 %";
+      - script.execute: display_wake
       - voice_assistant.stop:
       - micro_wake_word.stop:
       - script.execute: answer_hide
@@ -163,6 +170,7 @@ api:
               - lambda: 'id(ans_pending) = true;'
             else:
               - script.execute: answer_show
+        - script.execute: display_wake
 
     # Abschnitt 3: esphome.voice_satellite_s3_show_question
     - action: show_question
@@ -196,6 +204,7 @@ api:
             text: !lambda 'return id(q_text).c_str();'
         - lvgl.widget.show: question_layer
         - script.execute: question_timer
+        - script.execute: display_wake
 
     # Abschnitt 3: esphome.voice_satellite_s3_cancel_question
     - action: cancel_question
@@ -233,6 +242,12 @@ globals:
 
   # true, sobald Home Assistant verbunden ist (nicht nur das Log-Fenster)
   - id: ha_connected
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
+  # true, solange der Sprachassistent zuhört oder spricht (für das Display-Timeout)
+  - id: voice_assistant_busy
     type: bool
     restore_value: false
     initial_value: 'false'
@@ -405,7 +420,8 @@ light:
     name: "Display Helligkeit"
     id: display_backlight
     icon: "mdi:brightness-6"
-    # Letzte Helligkeit nach Neustart wiederherstellen, sonst an
+    # Helligkeit hier einstellen. Das Ein-/Ausschalten übernimmt das
+    # Display-Timeout bzw. der Nachtmodus (die Helligkeit bleibt erhalten).
     restore_mode: RESTORE_DEFAULT_ON
     default_transition_length: 300ms
     gamma_correct: 2.8
@@ -420,6 +436,50 @@ switch:
     id: amplifier_power
     restore_mode: ALWAYS_ON
     icon: "mdi:amplifier"
+
+  # Nachtmodus: Ein-/Ausschalten macht HA (Blueprint display_brightness, Eingabe
+  # night_mode_entity). Nachts gilt "Display Wachzeit" statt "Display-Timeout".
+  - platform: template
+    name: "Display Nachtmodus"
+    id: night_mode
+    icon: "mdi:weather-night"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    on_turn_on:
+      - script.execute: display_sleep
+    on_turn_off:
+      - script.execute: display_wake
+
+number:
+  # Tagsüber: so lange bleibt das Display nach der letzten Rückmeldung an (0 = nie aus)
+  - platform: template
+    name: "Display-Timeout"
+    id: display_timeout
+    icon: "mdi:timer-sand"
+    unit_of_measurement: "s"
+    mode: box
+    min_value: 0
+    max_value: 600
+    step: 5
+    optimistic: true
+    restore_value: true
+    initial_value: 30
+    set_action:
+      - script.execute: display_wake
+
+  # Nachtmodus: so lange bleibt das Display nach einer Rückmeldung an
+  - platform: template
+    name: "Display Wachzeit"
+    id: wake_seconds
+    icon: "mdi:timer-outline"
+    unit_of_measurement: "s"
+    mode: box
+    min_value: 5
+    max_value: 600
+    step: 5
+    optimistic: true
+    restore_value: true
+    initial_value: 30
 
 i2s_audio:
   - id: i2s_bus
@@ -477,6 +537,50 @@ media_player:
 # Skripte
 # ---------------------------------------------------------------
 script:
+  # Display einschalten (falls aus) und Abschaltzeit neu starten
+  - id: display_wake
+    then:
+      - if:
+          condition:
+            light.is_off: display_backlight
+          then:
+            - light.turn_on:
+                id: display_backlight
+                transition_length: 200ms
+      - script.execute: display_sleep
+
+  # Abschaltzeit: nach Ablauf aus, aber nicht solange Assistent, Antwort,
+  # Frage oder Update laufen (danach noch 5 s)
+  - id: display_sleep
+    mode: restart
+    then:
+      - if:
+          condition:
+            lambda: 'return id(night_mode).state || id(display_timeout).state > 0;'
+          then:
+            - delay: !lambda |-
+                float t = id(night_mode).state ? id(wake_seconds).state
+                                               : id(display_timeout).state;
+                if (isnan(t) || t < 5) t = 30;
+                return (uint32_t) (t * 1000);
+            - if:
+                condition:
+                  lambda: |-
+                    return id(voice_assistant_busy) || id(answer_show).is_running()
+                           || id(ans_pending) || id(q_active) || id(ota_running);
+                then:
+                  - while:
+                      condition:
+                        lambda: |-
+                          return id(voice_assistant_busy) || id(answer_show).is_running()
+                                 || id(ans_pending) || id(q_active) || id(ota_running);
+                      then:
+                        - delay: 1s
+                  - delay: 5s
+            - light.turn_off:
+                id: display_backlight
+                transition_length: 400ms
+
   # Erfolg: kurz grün, dann aus
   - id: led_success
     mode: restart
@@ -680,6 +784,8 @@ voice_assistant:
     - micro_wake_word.stop:
   # Blau: nur während der Aufnahme
   on_listening:
+    - lambda: 'id(voice_assistant_busy) = true;'
+    - script.execute: display_wake
     # Neuer Befehl: alte Antwort (auch eine gemerkte) verwerfen
     - script.execute: answer_hide
     - script.stop: auto_clear
@@ -701,6 +807,7 @@ voice_assistant:
         transition_length: 0s
   # Erfolg: kurz grün, gesprochenen Satz anzeigen
   on_tts_start:
+    - script.execute: display_wake
     - script.execute: led_success
     - lambda: |-
         id(status_text) = "Spreche...";
@@ -709,7 +816,9 @@ voice_assistant:
     - lvgl.widget.refresh: status_label
   # Alles fertig (auch die Sprachausgabe)
   on_idle:
-    - lambda: 'id(status_text) = "Bereit";'
+    - lambda: |-
+        id(voice_assistant_busy) = false;
+        id(status_text) = "Bereit";
     - lvgl.widget.refresh: status_label
     - script.execute: auto_clear
     # Während der Sprachausgabe empfangene Antwort jetzt anzeigen
@@ -719,6 +828,8 @@ voice_assistant:
         then:
           - lambda: 'id(ans_pending) = false;'
           - script.execute: answer_show
+    # Abschaltzeit ab jetzt, damit der gesprochene Satz noch lesbar ist
+    - script.execute: display_sleep
     - if:
         condition:
           lambda: 'return !id(ota_running);'
@@ -726,6 +837,8 @@ voice_assistant:
           - micro_wake_word.start:
   # Fehler: kurz rot, dann aus
   on_error:
+    - lambda: 'id(voice_assistant_busy) = false;'
+    - script.execute: display_wake
     - script.execute: led_error
     - lambda: 'id(status_text) = "Fehler";'
     - lvgl.widget.refresh: status_label
@@ -750,6 +863,7 @@ binary_sensor:
       mode: INPUT_PULLUP
     name: "MINUS Button"
     on_press:
+      - script.execute: display_wake
       - if:
           condition:
             lambda: 'return id(q_active);'
@@ -766,6 +880,7 @@ binary_sensor:
       mode: INPUT_PULLUP
     name: "PLUS Button"
     on_press:
+      - script.execute: display_wake
       - if:
           condition:
             lambda: 'return id(q_active);'
@@ -782,6 +897,7 @@ binary_sensor:
     name: "PWR Button"
     on_press:
       then:
+        - script.execute: display_wake
         - if:
             condition:
               lambda: 'return !id(ota_running);'
