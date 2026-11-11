@@ -6,7 +6,8 @@ blueprint:
     "next alarm" (sensor.alarm_next: workdays, holidays, vacation and the one-off special alarm
     set by voice or on the phone), so this automation has no day logic of its own.
 
-    The sunrise stops as soon as all lights are switched off (e.g. with the dimmer at the bed).
+    The sunrise stops as soon as one of the lights is switched off or dimmed down by hand
+    (e.g. with the dimmer at the bed); the other lights of the sunrise are switched off as well.
     Brightness-only lights (e.g. the display backlight of the S3 voice satellite) can be added too;
     they only get the brightness, coloured / tunable lights also the colour temperature.
 
@@ -119,7 +120,6 @@ actions:
         sequence:
           - variables:
               alarm: "{{ as_datetime(states(nx)).isoformat() }}"
-              # remaining time until the alarm (shorter if a special alarm is set at short notice)
               ct_lights: >
                 {% set ns = namespace(l=[]) %}
                 {% for e in lights_ %}
@@ -130,16 +130,33 @@ actions:
                 {% endfor %}
                 {{ ns.l if ct else [] }}
               plain_lights: "{{ lights_ | reject('in', ct_lights) | list }}"
+              # remaining time until the alarm (shorter if a special alarm is set at short notice)
               steps: >
                 {% set left = (as_datetime(alarm) - now()).total_seconds() %}
                 {{ [(left / step_s | float) | round(0, 'ceil') | int, 1] | max }}
           - repeat:
               count: "{{ steps }}"
               sequence:
-                # stop when someone switched all lights off during the sunrise
-                - if: "{{ repeat.index > 1 and lights_ | select('is_state', 'on') | list | count == 0 }}"
+                # stop as soon as someone switches ANY of the lights off or dims it down
+                # (compared with the brightness of the previous step, 10 % tolerance);
+                # then the remaining lights go off too, so one press on the dimmer ends the alarm
+                - if: >
+                    {% set ns = namespace(user=false) %}
+                    {% if repeat.index > 1 %}
+                      {% set prev = (b0 + (b1 - b0) * (repeat.index - 1) / steps) %}
+                      {% for e in lights_ %}
+                        {% set br = state_attr(e, 'brightness') %}
+                        {% if is_state(e, 'off') or (br is number and br / 2.55 < prev - 10) %}
+                          {% set ns.user = true %}
+                        {% endif %}
+                      {% endfor %}
+                    {% endif %}
+                    {{ ns.user }}
                   then:
-                    - stop: "lights switched off – sunrise cancelled"
+                    - action: light.turn_off
+                      continue_on_error: true
+                      target: {entity_id: "{{ lights_ }}"}
+                    - stop: "light switched off or dimmed – sunrise cancelled"
                 - variables:
                     f: "{{ repeat.index / steps }}"
                     b: "{{ (b0 + (b1 - b0) * f) | round(0) | int }}"
