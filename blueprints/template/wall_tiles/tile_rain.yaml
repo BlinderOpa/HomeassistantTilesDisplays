@@ -4,6 +4,7 @@ blueprint:
     Tile that warns when rain is expected soon while it is not raining yet (laundry, windows).
     Based on the helper sensor from the blueprint "rain soon", so it needs no weather entity itself.
     Visible inside a time window only.
+    Optional: stay visible while it rains and show until when ("regnet bis 15:00").
   domain: template
   source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/template/wall_tiles/tile_rain.yaml
   input:
@@ -19,6 +20,13 @@ blueprint:
       name: Visible until
       default: "22:00:00"
       selector: {time: {}}
+    show_while_raining:
+      name: Show while it rains
+      description: >
+        Off = the tile disappears as soon as it rains (default).
+        On = "Regen · regnet bis HH:MM" while it rains ("noch länger" if no dry hour within 12 h).
+      default: false
+      selector: {boolean: {}}
     prio:
       name: Priority
       default: 22
@@ -29,6 +37,7 @@ variables:
   t_from: !input time_from
   t_to: !input time_to
   prio_: !input prio
+  show_rain: !input show_while_raining
 
 sensor:
   icon: mdi:weather-rainy
@@ -36,15 +45,30 @@ sensor:
     {% set m = states(rs) | int(-1) %}
     {% set n = now().strftime('%H:%M:%S') %}
     {% set window = (t_from <= n < t_to) if t_from <= t_to else (n >= t_from or n < t_to) %}
-    {{ 'warn' if window and m >= 0 and not state_attr(rs, 'raining') else 'hidden' }}
+    {% set raining = state_attr(rs, 'raining') in [true, 'True', 'true'] %}
+    {% if not window %}hidden
+    {% elif raining %}{{ 'info' if show_rain else 'hidden' }}
+    {% elif m >= 0 %}warn
+    {% else %}hidden{% endif %}
   attributes:
     prio: "{{ prio_ | int }}"
-    title: "Regen kommt"
+    title: >
+      {{ 'Regen' if state_attr(rs, 'raining') in [true, 'True', 'true'] else 'Regen kommt' }}
     value: >
       {% set m = states(rs) | int(-1) %}
-      {{ 'gleich' if m <= 10 else 'ab ' ~ state_attr(rs, 'start') }}
+      {% set e = state_attr(rs, 'end') or '' %}
+      {% if state_attr(rs, 'raining') in [true, 'True', 'true'] %}
+        {{ 'regnet bis ' ~ e if e else 'regnet noch länger' }}
+      {% else %}
+        {{ 'gleich' if m <= 10 else 'ab ' ~ state_attr(rs, 'start') }}
+      {% endif %}
     detail: >
       {% set mm = state_attr(rs, 'mm') | float(0) %}
-      {{ ('ca. ' ~ (mm | string | replace('.', ',')) ~ ' mm · ' if mm >= 0.5 else '') ~ 'Wäsche/Fenster?' }}
+      {% set amount = 'ca. ' ~ (mm | string | replace('.', ',')) ~ ' mm' if mm >= 0.5 else '' %}
+      {% if state_attr(rs, 'raining') in [true, 'True', 'true'] %}
+        {{ amount }}
+      {% else %}
+        {{ (amount ~ ' · ' if amount else '') ~ 'Wäsche/Fenster?' }}
+      {% endif %}
     progress: -1
     tap: "none"

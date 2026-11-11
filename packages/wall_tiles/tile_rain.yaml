@@ -1,5 +1,6 @@
 # Tile: rain is coming
 #   Visible 6–22 h while it is NOT raining but rain is expected within the next 2 hours.
+#   Set show_while_raining: true to keep it visible while it rains ("regnet bis 15:00").
 #   An hour counts as wet from 0.2 mm or 50 % probability.
 #   Source: hourly forecast of the weather entity, polled every 10 min.
 #
@@ -21,3 +22,4 @@ template:
       path: wall_tiles/tile_rain.yaml
       input:
         rain_soon_entity: sensor.rain_soon
+        show_while_raining: true

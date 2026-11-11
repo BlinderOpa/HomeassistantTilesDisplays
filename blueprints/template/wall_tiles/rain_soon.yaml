@@ -3,8 +3,9 @@ blueprint:
   description: >
     Helper sensor for the tile "rain is coming". Reads the hourly forecast every 10 minutes.
     State = minutes until rain starts (0 = current hour), -1 = no rain within the look-ahead.
-    Attributes: start (HH:MM), mm (sum over look-ahead + 1 h), raining (it rains right now),
-    source (weather entity actually used).
+    Attributes: start (HH:MM), end (HH:MM, first dry hour after the rain, empty = not within
+    12 h), mm (sum over look-ahead + 1 h), raining (it rains right now), source (weather entity
+    actually used).
     The weather entity is optional: empty = first available weather entity with an hourly
     forecast. A chosen entity that is unavailable (e.g. Met.no answers 503) is replaced
     automatically for that run, so switching the weather service needs no change here.
@@ -70,9 +71,10 @@ actions:
     response_variable: r
     continue_on_error: true
   - variables:
+      raining_now: "{{ states(src) in ['rainy', 'pouring', 'lightning-rainy', 'snowy-rainy', 'hail'] }}"
       rs: >
         {% set fc = r[src].forecast if r is defined and src in r else [] %}
-        {% set ns = namespace(m=-1, t='', s=0) %}
+        {% set ns = namespace(m=-1, t='', s=0, wet_seen=raining_now, end='', done=false) %}
         {% for f in fc %}
           {% set t = as_local(as_datetime(f.datetime)) %}
           {% if t + timedelta(hours=1) > now() %}
@@ -85,15 +87,25 @@ actions:
             {% if t <= now() + timedelta(hours=look | int + 1) %}
               {% set ns.s = ns.s + (f.get('precipitation') | float(0)) %}
             {% endif %}
+            {# end of rain: first dry hour (starting in the future) after a wet hour or while raining #}
+            {% if not ns.done and t <= now() + timedelta(hours=12) %}
+              {% if wet %}
+                {% set ns.wet_seen = true %}
+              {% elif ns.wet_seen and t > now() %}
+                {% set ns.end = t.strftime('%H:%M') %}
+                {% set ns.done = true %}
+              {% endif %}
+            {% endif %}
           {% endif %}
         {% endfor %}
-        {{ {'m': ns.m, 'start': ns.t, 'mm': ns.s | round(1)} }}
+        {{ {'m': ns.m, 'start': ns.t, 'end': ns.end, 'mm': ns.s | round(1)} }}
 
 sensor:
   icon: mdi:weather-rainy
   state: "{{ rs.m }}"
   attributes:
     start: "{{ rs.start }}"
+    end: "{{ rs.end }}"
     mm: "{{ rs.mm }}"
-    raining: "{{ states(src) in ['rainy', 'pouring', 'lightning-rainy', 'snowy-rainy', 'hail'] }}"
+    raining: "{{ raining_now }}"
     source: "{{ src }}"
