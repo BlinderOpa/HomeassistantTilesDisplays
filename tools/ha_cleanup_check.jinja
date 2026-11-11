@@ -1,0 +1,46 @@
+{#- Home Assistant cleanup check for ha-wall-tiles.
+    Paste everything into Developer tools → Template. Read-only, changes nothing.
+    Adjust the list "expected" to the entities of YOUR my_wall_tiles.yaml. -#}
+{%- set expected = [
+  'script.display_answer',
+  'sensor.tile_rain', 'sensor.rain_soon',
+  'sensor.tile_train', 'sensor.train_next',
+  'sensor.tile_shutters_down', 'sensor.tile_shutters_up',
+  'script.shutters_evening_down', 'script.shutters_morning_up',
+  'sensor.tile_laundry', 'input_boolean.laundry_done', 'script.laundry_unloaded',
+  'sensor.tile_washer', 'sensor.tile_weather_warning', 'sensor.tile_batteries',
+  'sensor.tile_maintenance',
+] -%}
+{%- set ids = states | map(attribute='entity_id') | list -%}
+## 1. Expected but missing (not created yet, or named differently)
+{% for e in expected if e not in ids -%}
+- {{ e }}
+{% else %}- none
+{% endfor %}
+## 2. Who pushes tiles to the displays? (more than one active per device = conflict)
+{% for s in states.automation
+   | selectattr('attributes.friendly_name', 'search', '(?i)push|tiles|kacheln') -%}
+- {{ s.state }} · {{ s.attributes.friendly_name }} ({{ s.entity_id }})
+{% endfor %}
+## 3. Orphaned (still registered, but no YAML provides them any more) → delete in Settings → Entities
+{% for s in states | selectattr('attributes.restored', 'eq', true) -%}
+- {{ s.entity_id }}
+{% else %}- none
+{% endfor %}
+## 4. Unavailable tiles / scripts, disabled automations
+{% for s in (states.automation | list) + (states.script | list)
+   + (states.sensor | selectattr('entity_id', 'match', 'sensor\\.tile_') | list)
+   if s.state in ['unavailable', 'unknown'] or (s.domain == 'automation' and s.state == 'off') -%}
+- {{ s.state }} · {{ s.entity_id }}
+{% else %}- none
+{% endfor %}
+## 5. Automations not triggered for 30 days (candidates for obsolete; seasonal ones are fine)
+{% for s in states.automation
+   if s.attributes.last_triggered is none or s.attributes.last_triggered < now() - timedelta(days=30) -%}
+- {{ s.attributes.last_triggered.strftime('%Y-%m-%d') if s.attributes.last_triggered else 'never' }} · {{ s.attributes.friendly_name }}
+{% endfor %}
+## 6. Tiles without the label "Display" (the collector ignores them)
+{% for e in ids | select('match', 'sensor\\.tile_') if e not in label_entities('Display') -%}
+- {{ e }}
+{% else %}- none
+{% endfor %}

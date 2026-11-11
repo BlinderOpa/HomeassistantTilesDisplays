@@ -102,6 +102,7 @@ examples/dashboard_alarm.yaml dashboard card for the alarm clock (next alarm + s
 esphome/                      device firmware (ESPHome + LVGL) + examples/ for your device files
 docs/interface.md             the contract between HA and the devices
 tools/check_private.sh        scan for private data before you push
+tools/ha_cleanup_check.jinja  paste into Developer tools → Template: missing, doubled, orphaned, unused
 ```
 
 ## Requirements
