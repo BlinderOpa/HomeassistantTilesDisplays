@@ -1,0 +1,84 @@
+blueprint:
+  name: "Wall tiles voice: time and date"
+  description: >
+    "Wie spät ist es?" / "Welcher Tag ist heute?" – Speech-to-Phrase has no built-in German
+    time or date commands. Answers by voice and shows the time / date on the satellite.
+    Optionally names today's holiday (any binary sensor or calendar whose state/name says so).
+  domain: automation
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/automation/wall_tiles/voice_time_date.yaml
+  input:
+    sentences_time:
+      name: Sentences – time
+      default:
+        - "Wie spät ist es"
+        - "Wie viel Uhr ist es"
+        - "Uhrzeit"
+      selector: {text: {multiple: true}}
+    sentences_date:
+      name: Sentences – date
+      default:
+        - "Welcher Tag ist heute"
+        - "Welches Datum ist heute"
+        - "Der Wievielte ist heute"
+        - "Datum"
+        - "Welcher Wochentag ist heute"
+      selector: {text: {multiple: true}}
+    holiday_sensor:
+      name: Holiday today (optional)
+      description: >
+        Binary sensor that is on on public holidays (e.g. from the Holiday or a workday
+        integration). Its attribute "description"/"name" or friendly name is spoken.
+      default: ""
+      selector: {entity: {domain: binary_sensor}}
+
+mode: parallel
+
+triggers:
+  - trigger: conversation
+    id: time
+    command: !input sentences_time
+  - trigger: conversation
+    id: date
+    command: !input sentences_date
+
+variables:
+  hol: !input holiday_sensor
+  days: ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag']
+  months: ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August',
+           'September', 'Oktober', 'November', 'Dezember']
+  holiday: >
+    {% if hol and is_state(hol, 'on') %}
+      {{ state_attr(hol, 'description') or state_attr(hol, 'name') or 'Feiertag' }}
+    {% endif %}
+
+actions:
+  - choose:
+      - conditions: "{{ trigger.id == 'time' }}"
+        sequence:
+          - action: script.display_answer
+            continue_on_error: true
+            data:
+              target: "{{ trigger.device_id }}"
+              title: "Uhrzeit"
+              value: "{{ now().strftime('%H:%M') }}"
+              detail: "{{ days[now().weekday()] }}, {{ now().day }}. {{ months[now().month - 1] }}"
+              status: info
+              icon: clock-outline
+              duration: 6
+          - set_conversation_response: >
+              {% set h = now().hour %}{% set m = now().minute %}
+              Es ist {{ h }} Uhr{{ (' ' ~ m) if m else '' }}.
+    default:
+      - action: script.display_answer
+        continue_on_error: true
+        data:
+          target: "{{ trigger.device_id }}"
+          title: "{{ days[now().weekday()] }}"
+          value: "{{ now().strftime('%d.%m.%Y') }}"
+          detail: "{{ holiday | trim if holiday | trim else ('KW ' ~ now().isocalendar()[1]) }}"
+          status: info
+          icon: calendar
+          duration: 6
+      - set_conversation_response: >
+          Heute ist {{ days[now().weekday()] }}, der {{ now().day }}. {{ months[now().month - 1] }}.
+          {%- if holiday | trim %} Feiertag: {{ holiday | trim }}.{% endif %}

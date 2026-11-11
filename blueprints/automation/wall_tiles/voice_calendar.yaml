@@ -1,0 +1,156 @@
+blueprint:
+  name: "Wall tiles voice: appointments"
+  description: >
+    "Termine" / "Termine morgen" / "Termine diese Woche" – reads the appointments of your
+    family calendars and shows the count and the next one on the satellite.
+
+    Calendars: either pick them below, or leave the list empty to use every calendar entity
+    whose label starts with the label prefix (same labels as the wall calendar,
+    e.g. "Kalender Anna" → spoken as "Anna"). The name is only spoken if more than one
+    calendar is used.
+  domain: automation
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/automation/wall_tiles/voice_calendar.yaml
+  input:
+    calendars:
+      name: Calendars (optional)
+      description: Empty = all calendars with a label that starts with the prefix below.
+      default: []
+      selector: {entity: {domain: calendar, multiple: true}}
+    label_prefix:
+      name: Label prefix
+      default: "Kalender "
+      selector: {text: {}}
+    sentences_today:
+      name: Sentences – today (rest of the day)
+      default:
+        - "Termine [heute]"
+        - "Was steht heute an"
+        - "Was ist heute los"
+        - "Habe ich heute Termine"
+      selector: {text: {multiple: true}}
+    sentences_tomorrow:
+      name: Sentences – tomorrow
+      default:
+        - "Termine morgen"
+        - "Was steht morgen an"
+        - "Was ist morgen los"
+        - "Habe ich morgen Termine"
+      selector: {text: {multiple: true}}
+    sentences_week:
+      name: Sentences – next 7 days
+      default:
+        - "Termine (diese | die) Woche"
+        - "Was steht (diese | die) Woche an"
+      selector: {text: {multiple: true}}
+    max_spoken:
+      name: Appointments read out at most
+      default: 5
+      selector: {number: {min: 1, max: 15}}
+
+mode: parallel
+
+triggers:
+  - trigger: conversation
+    id: today
+    command: !input sentences_today
+  - trigger: conversation
+    id: tomorrow
+    command: !input sentences_tomorrow
+  - trigger: conversation
+    id: week
+    command: !input sentences_week
+
+variables:
+  cal_input: !input calendars
+  prefix: !input label_prefix
+  max_n: !input max_spoken
+  cals: >
+    {% if cal_input | count > 0 %}{{ cal_input }}
+    {% else %}
+      {% set ns = namespace(l=[]) %}
+      {% for lb in labels() if (label_name(lb) or '').startswith(prefix) %}
+        {% set ns.l = ns.l + (label_entities(lb) | select('match', '^calendar\.') | list) %}
+      {% endfor %}
+      {{ ns.l | unique | list }}
+    {% endif %}
+  # spoken name per calendar: label without prefix, else friendly name
+  whose: >
+    {% set ns = namespace(d={}) %}
+    {% for c in cals %}
+      {% set lb = labels(c) | map('label_name') | select('string') | select('match', '^' ~ prefix) | first %}
+      {% set n = lb[prefix | length:] if lb else (state_attr(c, 'friendly_name') or c) %}
+      {% set ns.d = dict(ns.d, **{c: n}) %}
+    {% endfor %}
+    {{ ns.d }}
+  start: >
+    {% if trigger.id == 'tomorrow' %}{{ (today_at('00:00') + timedelta(days=1)).isoformat() }}
+    {% else %}{{ now().replace(second=0, microsecond=0).isoformat() }}{% endif %}
+  end: >
+    {% if trigger.id == 'today' %}{{ (today_at('00:00') + timedelta(days=1)).isoformat() }}
+    {% elif trigger.id == 'tomorrow' %}{{ (today_at('00:00') + timedelta(days=2)).isoformat() }}
+    {% else %}{{ (today_at('00:00') + timedelta(days=8)).isoformat() }}{% endif %}
+  when_word: "{{ {'today': 'Heute', 'tomorrow': 'Morgen', 'week': 'Diese Woche'}[trigger.id] }}"
+
+actions:
+  - if: "{{ cals | count == 0 }}"
+    then:
+      - set_conversation_response: "Ich habe keinen Kalender gefunden."
+      - stop: "no calendar"
+  - action: calendar.get_events
+    target:
+      entity_id: "{{ cals }}"
+    data:
+      start_date_time: "{{ start }}"
+      end_date_time: "{{ end }}"
+    response_variable: res
+  - variables:
+      several: "{{ cals | count > 1 }}"
+      days: ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag']
+      # flat, sorted list: s = start (sort key), allday, text for voice, short text for display
+      events: >
+        {% set ns = namespace(l=[]) %}
+        {% for c in cals %}
+          {% for e in (res[c].events if c in res else []) %}
+            {% set allday = e.start | length == 10 %}
+            {% set st = as_datetime(e.start ~ ('T00:00:00' if allday else '')) | as_local %}
+            {% set ns.l = ns.l + [{'s': st.isoformat(), 'allday': allday, 'day': st.weekday(),
+                                    'date': st.date() | string, 'h': st.hour, 'm': st.minute,
+                                    'title': (e.summary or 'Termin') | trim,
+                                    'who': whose[c] if several else ''}] %}
+          {% endfor %}
+        {% endfor %}
+        {{ ns.l | sort(attribute='s') }}
+      n: "{{ events | count }}"
+      spoken: >
+        {% set ns = namespace(l=[], lastday='') %}
+        {% for e in events[:max_n] %}
+          {% set t = 'ganztägig' if e.allday else (e.h ~ ' Uhr' ~ ((' ' ~ e.m) if e.m else '')) %}
+          {% set day = '' %}
+          {% if trigger.id == 'week' and e.date != ns.lastday %}
+            {% set day = ('heute' if e.date == (now().date() | string)
+                          else 'morgen' if e.date == ((now() + timedelta(days=1)).date() | string)
+                          else days[e.day]) ~ ' ' %}
+            {% set ns.lastday = e.date %}
+          {% endif %}
+          {% set ns.l = ns.l + [day ~ t ~ ' ' ~ e.title ~ ((' bei ' ~ e.who) if e.who else '')] %}
+        {% endfor %}
+        {{ ns.l }}
+      first: >
+        {% if n > 0 %}{% set e = events[0] %}
+          {{ ('' if e.allday else ('%02d:%02d ' | format(e.h, e.m))) ~ e.title }}
+        {% endif %}
+
+  - action: script.display_answer
+    continue_on_error: true
+    data:
+      target: "{{ trigger.device_id }}"
+      title: "Termine {{ when_word | lower if trigger.id != 'week' else 'Woche' }}"
+      value: "{{ 'keine' if n == 0 else (n ~ (' Termin' if n == 1 else ' Termine')) }}"
+      detail: "{{ first[:40] }}"
+      status: "{{ 'info' if n > 0 else 'ok' }}"
+      icon: calendar
+      duration: 10
+  - set_conversation_response: >
+      {% if n == 0 %}{{ when_word }} {{ 'stehen keine Termine mehr an' if trigger.id == 'today' else 'stehen keine Termine an' }}.
+      {% elif n == 1 %}{{ when_word }} ein Termin: {{ spoken[0] }}.
+      {% else %}{{ when_word }} {{ n }} Termine: {{ spoken | join(', ') }}{{ ' und ' ~ (n - max_n) ~ ' weitere' if n > max_n else '' }}.{% endif %}

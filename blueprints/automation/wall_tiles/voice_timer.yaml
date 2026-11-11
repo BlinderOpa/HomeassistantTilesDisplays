@@ -1,0 +1,220 @@
+blueprint:
+  name: "Wall tiles voice: kitchen timer"
+  description: >
+    "Timer zehn Minuten" · "Wie lange noch?" · "Timer aus". One timer at a time; when it
+    runs out, the satellite that started it announces it and shows a red answer.
+
+    Speech-to-Phrase has no built-in German timer commands, and sentence triggers cannot use
+    number lists – so the durations are written out as words in the sentences and turned into
+    minutes by this blueprint. Add more durations by adding them to the sentence AND, if new,
+    to the word table in the blueprint.
+
+    Needs two helpers (Settings → Devices & services → Helpers):
+      - a **Timer** (e.g. timer.voice_timer), "restore" on
+      - a **Text** with max length 255 (e.g. input_text.voice_timer_device) – remembers the satellite
+    The announcement uses assist_satellite.announce (needs a speaker / media player on the device);
+    the red answer on the display works on every device.
+  domain: automation
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/automation/wall_tiles/voice_timer.yaml
+  input:
+    timer_entity:
+      name: Timer helper
+      selector: {entity: {domain: timer}}
+    device_text:
+      name: Text helper (remembers the satellite)
+      selector: {entity: {domain: input_text}}
+    sentences_start:
+      name: Sentences – start
+      default:
+        - "[stelle] [einen] Timer [auf | für] (eine | eins | zwei | drei | vier | fünf | sechs | sieben | acht | neun | zehn | zwölf | fünfzehn | zwanzig | fünfundzwanzig | dreißig | vierzig | fünfundvierzig | fünfzig | sechzig | neunzig) (Minute | Minuten)"
+        - "[stelle] [einen] Timer [auf | für] (eine halbe Stunde | eine Stunde | anderthalb Stunden | zwei Stunden)"
+      selector: {text: {multiple: true}}
+    sentences_left:
+      name: Sentences – time left
+      default:
+        - "Wie lange [läuft der Timer] noch"
+        - "Timer Restzeit"
+        - "Wie lange noch"
+      selector: {text: {multiple: true}}
+    sentences_cancel:
+      name: Sentences – cancel
+      default:
+        - "Timer (aus | stopp | stop | abbrechen | löschen)"
+        - "(Lösche | Stoppe) den Timer"
+      selector: {text: {multiple: true}}
+    message_done:
+      name: Announcement when finished
+      default: "Der Timer ist abgelaufen."
+      selector: {text: {}}
+
+mode: queued
+
+triggers:
+  - trigger: conversation
+    id: start
+    command: !input sentences_start
+  - trigger: conversation
+    id: left
+    command: !input sentences_left
+  - trigger: conversation
+    id: cancel
+    command: !input sentences_cancel
+  - trigger: event
+    id: done
+    event_type: timer.finished
+    event_data:
+      entity_id: !input timer_entity
+
+variables:
+  tmr: !input timer_entity
+  dev_text: !input device_text
+  msg_done: !input message_done
+  # word → minutes (whole words of the recognised sentence)
+  words:
+    eine: 1
+    eins: 1
+    zwei: 2
+    drei: 3
+    vier: 4
+    fünf: 5
+    sechs: 6
+    sieben: 7
+    acht: 8
+    neun: 9
+    zehn: 10
+    zwölf: 12
+    fünfzehn: 15
+    zwanzig: 20
+    fünfundzwanzig: 25
+    dreißig: 30
+    vierzig: 40
+    fünfundvierzig: 45
+    fünfzig: 50
+    sechzig: 60
+    neunzig: 90
+  minutes: >
+    {% set s = (trigger.sentence | default('') | lower) %}
+    {% if 'halbe stunde' in s %}30
+    {% elif 'anderthalb' in s %}90
+    {% elif 'zwei stunden' in s %}120
+    {% elif 'eine stunde' in s %}60
+    {% else %}
+      {% set ns = namespace(m=0) %}
+      {% for w in s.replace('?', '').replace('.', '').split(' ') if w in words %}{% set ns.m = words[w] %}{% endfor %}
+      {{ ns.m }}
+    {% endif %}
+  left_s: >
+    {% set f = state_attr(tmr, 'finishes_at') %}
+    {% if is_state(tmr, 'active') and f %}{{ [(as_datetime(f) - now()).total_seconds() | int, 0] | max }}
+    {% elif is_state(tmr, 'paused') %}
+      {% set r = (state_attr(tmr, 'remaining') or '0:00:00').split(':') %}
+      {{ r[0] | int * 3600 + r[1] | int * 60 + r[2] | int }}
+    {% else %}-1{% endif %}
+  left_text: >
+    {% set m = left_s // 60 %}{% set s = left_s % 60 %}
+    {% if left_s < 0 %}
+    {% elif m >= 60 %}{{ m // 60 }} Stunde{{ 'n' if m // 60 > 1 }}{{ (' und ' ~ (m % 60) ~ ' Minuten') if m % 60 else '' }}
+    {% elif m >= 2 %}{{ m }} Minuten
+    {% elif m == 1 %}eine Minute{{ (' und ' ~ s ~ ' Sekunden') if s else '' }}
+    {% else %}{{ s }} Sekunden{% endif %}
+  dur_text: >
+    {% if minutes >= 60 and minutes % 60 == 0 %}{{ minutes // 60 }} Stunde{{ 'n' if minutes > 60 }}
+    {% elif minutes == 90 %}anderthalb Stunden
+    {% elif minutes == 1 %}eine Minute
+    {% else %}{{ minutes }} Minuten{% endif %}
+
+actions:
+  - choose:
+      # ---------- start ----------
+      - conditions: "{{ trigger.id == 'start' }}"
+        sequence:
+          - if: "{{ minutes | int == 0 }}"
+            then:
+              - set_conversation_response: "Wie lange soll der Timer laufen?"
+              - stop: "no duration"
+          - action: input_text.set_value
+            target:
+              entity_id: "{{ dev_text }}"
+            data:
+              value: "{{ trigger.device_id or '' }}"
+          - action: timer.start
+            target:
+              entity_id: "{{ tmr }}"
+            data:
+              duration: "{{ '%02d:%02d:00' | format(minutes | int // 60, minutes | int % 60) }}"
+          - action: script.display_answer
+            continue_on_error: true
+            data:
+              target: "{{ trigger.device_id }}"
+              title: "Timer"
+              value: "{{ minutes }} min"
+              detail: "fertig {{ (now() + timedelta(minutes=minutes | int)).strftime('%H:%M') }}"
+              status: info
+              icon: timer-outline
+              duration: 5
+          - set_conversation_response: "Timer läuft, {{ dur_text | trim }}."
+
+      # ---------- time left ----------
+      - conditions: "{{ trigger.id == 'left' }}"
+        sequence:
+          - action: script.display_answer
+            continue_on_error: true
+            data:
+              target: "{{ trigger.device_id }}"
+              title: "Timer"
+              value: >
+                {{ 'aus' if left_s < 0 else ('%d:%02d' | format(left_s // 60, left_s % 60)) }}
+              detail: >
+                {{ ('fertig ' ~ (now() + timedelta(seconds=left_s)).strftime('%H:%M')) if left_s >= 0 else '' }}
+              status: "{{ 'info' if left_s >= 0 else 'off' }}"
+              icon: timer-outline
+              duration: 5
+          - set_conversation_response: >
+              {% if left_s < 0 %}Es läuft gerade kein Timer.
+              {% else %}Noch {{ left_text | trim }}.{% endif %}
+
+      # ---------- cancel ----------
+      - conditions: "{{ trigger.id == 'cancel' }}"
+        sequence:
+          - variables:
+              was_running: "{{ left_s >= 0 }}"
+          - action: timer.cancel
+            target:
+              entity_id: "{{ tmr }}"
+          - action: script.display_answer
+            continue_on_error: true
+            data:
+              target: "{{ trigger.device_id }}"
+              title: "Timer"
+              value: "aus"
+              status: "off"
+              icon: timer-outline
+              duration: 3
+          - set_conversation_response: >
+              {{ 'Timer gelöscht.' if was_running else 'Es läuft gerade kein Timer.' }}
+
+      # ---------- finished ----------
+      - conditions: "{{ trigger.id == 'done' }}"
+        sequence:
+          - variables:
+              dev: "{{ states(dev_text) if states(dev_text) not in ['', 'unknown', 'unavailable'] else '' }}"
+              sat: >
+                {{ (device_entities(dev) | select('match', '^assist_satellite\.') | first) if dev else '' }}
+          - action: script.display_answer
+            continue_on_error: true
+            data:
+              target: "{{ dev if dev else 'all' }}"
+              title: "Timer"
+              value: "abgelaufen"
+              status: alarm
+              icon: timer-outline
+              duration: 60
+          - if: "{{ sat not in [none, ''] }}"
+            then:
+              - action: assist_satellite.announce
+                continue_on_error: true
+                target:
+                  entity_id: "{{ sat }}"
+                data:
+                  message: "{{ msg_done }}"
+                  preannounce: true

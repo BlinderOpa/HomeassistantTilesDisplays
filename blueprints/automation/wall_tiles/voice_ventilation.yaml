@@ -1,0 +1,161 @@
+blueprint:
+  name: "Wall tiles voice: ventilation on / off / boost"
+  description: >
+    "Lüftung aus" · "Lüftung an" · "Lüftung hoch" · "Lüftung normal" · "Läuft die Lüftung?"
+    for a central ventilation unit (e.g. Komfovent, Zehnder, Helios …).
+
+    On/off uses a switch, fan or input_boolean. Boost and normal optionally set an option of a
+    mode select (e.g. select.…_operation_mode → "override" / "home"); leave the option empty
+    to disable that command. If a boost script is given (e.g. the one of the humidity tile),
+    it is used instead of the select.
+  domain: automation
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/automation/wall_tiles/voice_ventilation.yaml
+  input:
+    power_entity:
+      name: On/off entity
+      selector: {entity: {domain: [switch, fan, input_boolean]}}
+    mode_select:
+      name: Mode select (optional)
+      default: ""
+      selector: {entity: {domain: [select, input_select]}}
+    boost_option:
+      name: Option for "boost" (optional)
+      default: ""
+      selector: {text: {}}
+    normal_option:
+      name: Option for "normal" (optional)
+      default: ""
+      selector: {text: {}}
+    boost_script:
+      name: Boost script instead of the select option (optional)
+      default: ""
+      selector: {entity: {domain: script}}
+    name:
+      name: Name (display and voice)
+      default: "Lüftung"
+      selector: {text: {}}
+    sentences_on:
+      name: Sentences – on
+      default:
+        - "Lüftung (an | ein | einschalten)"
+        - "Schalte die Lüftung (an | ein)"
+      selector: {text: {multiple: true}}
+    sentences_off:
+      name: Sentences – off
+      default:
+        - "Lüftung (aus | ausschalten)"
+        - "Schalte die Lüftung aus"
+      selector: {text: {multiple: true}}
+    sentences_boost:
+      name: Sentences – boost
+      default:
+        - "Lüftung (hoch | stark | stärker)"
+        - "Stoßlüften"
+      selector: {text: {multiple: true}}
+    sentences_normal:
+      name: Sentences – normal
+      default:
+        - "Lüftung normal"
+      selector: {text: {multiple: true}}
+    sentences_state:
+      name: Sentences – state
+      default:
+        - "Läuft die Lüftung"
+        - "Ist die Lüftung (an | aus)"
+      selector: {text: {multiple: true}}
+
+mode: queued
+
+triggers:
+  - trigger: conversation
+    id: "on"
+    command: !input sentences_on
+  - trigger: conversation
+    id: "off"
+    command: !input sentences_off
+  - trigger: conversation
+    id: boost
+    command: !input sentences_boost
+  - trigger: conversation
+    id: normal
+    command: !input sentences_normal
+  - trigger: conversation
+    id: state
+    command: !input sentences_state
+
+variables:
+  pwr: !input power_entity
+  sel: !input mode_select
+  opt_boost: !input boost_option
+  opt_normal: !input normal_option
+  boost_scr: !input boost_script
+  name_: !input name
+  reachable: "{{ states(pwr) not in ['unknown', 'unavailable'] }}"
+
+actions:
+  - if: "{{ not reachable }}"
+    then:
+      - action: script.display_answer
+        continue_on_error: true
+        data:
+          target: "{{ trigger.device_id }}"
+          title: "{{ name_ }}"
+          value: "nicht erreichbar"
+          status: warn
+          icon: alert
+      - set_conversation_response: "Die {{ name_ }} ist gerade nicht erreichbar."
+      - stop: "not reachable"
+
+  - choose:
+      - conditions: "{{ trigger.id == 'on' }}"
+        sequence:
+          - action: homeassistant.turn_on
+            target: {entity_id: "{{ pwr }}"}
+      - conditions: "{{ trigger.id == 'off' }}"
+        sequence:
+          - action: homeassistant.turn_off
+            target: {entity_id: "{{ pwr }}"}
+      - conditions: "{{ trigger.id in ['boost', 'normal'] }}"
+        sequence:
+          - variables:
+              opt: "{{ opt_boost if trigger.id == 'boost' else opt_normal }}"
+              use_script: "{{ trigger.id == 'boost' and boost_scr not in [none, ''] }}"
+          - if: "{{ not use_script and (sel in [none, ''] or opt in [none, '']) }}"
+            then:
+              - set_conversation_response: "Das ist für die {{ name_ }} nicht eingerichtet."
+              - stop: "not configured"
+          - if: "{{ is_state(pwr, 'off') }}"
+            then:
+              - action: homeassistant.turn_on
+                target: {entity_id: "{{ pwr }}"}
+          - if: "{{ use_script }}"
+            then:
+              - action: script.turn_on
+                target: {entity_id: "{{ boost_scr }}"}
+            else:
+              - action: "{{ 'input_select.select_option' if sel.startswith('input_select.') else 'select.select_option' }}"
+                target: {entity_id: "{{ sel }}"}
+                data: {option: "{{ opt }}"}
+
+  - delay: 1
+  - variables:
+      on_now: "{{ not is_state(pwr, 'off') }}"
+      mode_now: "{{ states(sel) if sel not in [none, ''] and on_now else '' }}"
+      mode_word: >
+        {{ {'override': 'hoch', 'intensive': 'hoch', 'boost': 'hoch', 'home': 'normal',
+            'normal': 'normal', 'away': 'niedrig', 'eco': 'niedrig', 'fireplace': 'Kamin',
+            'kitchen': 'Küche', 'holidays': 'Urlaub', 'air_quality': 'Luftqualität'}.get(mode_now, mode_now) }}
+  - action: script.display_answer
+    continue_on_error: true
+    data:
+      target: "{{ trigger.device_id }}"
+      title: "{{ name_ }}"
+      value: "{{ ('an' ~ ((' · ' ~ mode_word) if mode_word else '')) if on_now else 'aus' }}"
+      status: "{{ 'on' if on_now else 'off' }}"
+      icon: fan
+      duration: 4
+  - set_conversation_response: >
+      {% if trigger.id == 'state' %}Die {{ name_ }} ist {{ ('an' ~ ((', Stufe ' ~ mode_word) if mode_word else '')) if on_now else 'aus' }}.
+      {% elif trigger.id == 'boost' %}Die {{ name_ }} läuft hoch.
+      {% elif trigger.id == 'normal' %}Die {{ name_ }} läuft wieder normal.
+      {% else %}Die {{ name_ }} ist {{ 'eingeschaltet' if on_now else 'ausgeschaltet' }}.{% endif %}

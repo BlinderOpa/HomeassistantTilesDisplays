@@ -79,6 +79,11 @@ blueprints/
     voice_ack_tile            "Müll ist draußen" = tap by voice
     voice_switch_tile         "E-Bike laden" / "E-Bike aus"
     voice_shutters_group      "Untere Rollos runter"
+    voice_light_brightness    "Licht heller" / "Licht im Büro dunkler" (satellite's area or {area})
+    voice_calendar            "Termine" · "Termine morgen" · "Termine diese Woche" (labels "Kalender <name>")
+    voice_time_date           "Wie spät ist es?" · "Welcher Tag ist heute?"
+    voice_timer               "Timer zehn Minuten" · "Wie lange noch?" · "Timer aus" (needs a timer + text helper)
+    voice_ventilation         "Lüftung aus / an / hoch / normal" · "Läuft die Lüftung?"
     voice_appliance · voice_charging_plug · voice_3d_printer · voice_waste
     voice_train · voice_weather · voice_energy
     wake_light                sunrise light alarm, follows alarm_next (workdays + special alarm)

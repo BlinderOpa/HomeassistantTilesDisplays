@@ -1,4 +1,4 @@
-# Interface: Home Assistant ↔ displays (v1.12)
+# Interface: Home Assistant ↔ displays (v1.14)
 
 Applies to every device that shows tiles or answers. Reference devices:
 
@@ -39,7 +39,8 @@ power-plug pool door-open molecule-co2 solar-power printer printer-3d printer-3d
 bicycle-electric pump calendar lightbulb fire flash wrench phone-ring phone-missed heat-pump fan-alert
 window-shutter window-shutter-open snowflake-alert weather-sunny weather-night weather-partly-cloudy
 weather-cloudy weather-rainy weather-pouring weather-snowy weather-snowy-heavy weather-snowy-rainy weather-fog
-weather-hail weather-lightning weather-lightning-rainy weather-windy alarm alarm-off`
+weather-hail weather-lightning weather-lightning-rainy weather-windy alarm alarm-off
+clock-outline timer-outline fan battery-charging progress-clock school`
 
 ### 1.3 Text lengths
 
@@ -282,6 +283,7 @@ New fields only as optional fields with a default (old devices ignore unknown JS
 New icons go into 1.2 first, then into the devices. Incompatible changes bump the major version.
 
 ### Changelog
+- v1.14: icons `clock-outline`, `timer-outline`, `fan` (voice blueprints time/date, timer, ventilation) on all devices; S3 and C6 also get `window-shutter`, `window-shutter-open`, `phone-missed`, `printer-3d`, `printer-3d-nozzle-alert` (voice answers); the 7" also gets `alarm`, `alarm-off`, `battery-charging`, `progress-clock`, `school` (tile icons). Firmware of all three devices changes (new glyphs only).
 - v1.13: icons `alarm` and `alarm-off` (1.2) for the voice blueprint "alarm clock"; only S3 and C6 firmware change (the 7" has no voice).
 - v1.12: display sleep and night mode for the S3 (4.8): number `Display-Timeout`, switch `Display Nachtmodus`, number `Display Wachzeit`; the backlight goes on briefly for every response. Only the S3 firmware changes.
 - v1.11: follow-up listening (4.9): optional field `listen_again` of `display_answer` and C6 action `listen_again`. The C6 no longer listens again after every answer by itself (the earlier, unreleased "continuous" behaviour), only when HA asks.

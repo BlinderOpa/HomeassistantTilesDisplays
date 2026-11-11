@@ -1,0 +1,148 @@
+blueprint:
+  name: "Wall tiles voice: lights brighter / darker"
+  description: >
+    "Licht heller" / "Licht dunkler" – with or without a room. Without a room the lights in
+    the area of the voice satellite are used, with a room ("Licht im Büro heller") the named
+    area ({area} = Home Assistant area names and aliases).
+
+    Brighter: lights that are off are switched on (last brightness), lights that are on get
+    brighter by the step. Darker: dims by the step but never switches off (stops at the
+    minimum). Only dimmable lights are dimmed. Afterwards the satellite shows the new brightness.
+
+    Speech-to-Phrase has no built-in German brightness commands, so this blueprint adds them.
+    Assign your satellites to an area; add an area alias if you call a room differently.
+    Restart Speech-to-Phrase after creating the automation.
+  domain: automation
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/automation/wall_tiles/voice_light_brightness.yaml
+  input:
+    sentences_brighter:
+      name: Sentences – brighter
+      description: Use {area} for a room. Sentences without {area} use the satellite's area.
+      default:
+        - "[bitte] [mach | mache | stelle] [das] Licht [im | in der | in] {area} heller"
+        - "[bitte] [mach | mache | stelle] [das] Licht heller"
+      selector: {text: {multiple: true}}
+    sentences_darker:
+      name: Sentences – darker
+      default:
+        - "[bitte] [mach | mache | stelle] [das] Licht [im | in der | in] {area} dunkler"
+        - "[bitte] [mach | mache | stelle] [das] Licht dunkler"
+      selector: {text: {multiple: true}}
+    step_pct:
+      name: Step
+      default: 20
+      selector: {number: {min: 5, max: 50, step: 5, unit_of_measurement: "%"}}
+    min_pct:
+      name: Minimum brightness when dimming
+      description: Darker never goes below this (and never switches off).
+      default: 5
+      selector: {number: {min: 1, max: 30, step: 1, unit_of_measurement: "%"}}
+    exclude_lights:
+      name: Lights to ignore
+      description: e.g. light groups or night lights that should never react.
+      default: []
+      selector: {entity: {domain: light, multiple: true}}
+
+mode: parallel
+
+triggers:
+  - trigger: conversation
+    id: brighter
+    command: !input sentences_brighter
+  - trigger: conversation
+    id: darker
+    command: !input sentences_darker
+
+variables:
+  step: !input step_pct
+  min_: !input min_pct
+  exclude: !input exclude_lights
+  brighter: "{{ trigger.id == 'brighter' }}"
+  area_: >
+    {% set a = trigger.slots.get('area') if trigger.slots is defined and trigger.slots else none %}
+    {% if a %}{{ area_id(a) or a }}
+    {% elif trigger.device_id %}{{ area_id(trigger.device_id) or '' }}
+    {% endif %}
+  room: "{{ area_name(area_) if area_ else '' }}"
+  lights: >
+    {{ (area_entities(area_) if area_ else [])
+       | select('match', '^light\.') | reject('in', exclude)
+       | reject('is_state', 'unavailable') | list }}
+  dimmable: >
+    {{ lights | reject('is_state_attr', 'supported_color_modes', ['onoff']) | list }}
+  lights_on: "{{ dimmable | select('is_state', 'on') | list }}"
+  lights_off: "{{ lights | select('is_state', 'off') | list }}"
+  # already so dark that one more step would go below the minimum
+  low: >
+    {% set ns = namespace(l=[]) %}
+    {% for e in lights_on if (state_attr(e, 'brightness') | int(255)) / 2.55 <= step + min_ %}
+      {% set ns.l = ns.l + [e] %}
+    {% endfor %}
+    {{ ns.l }}
+  high: "{{ lights_on | reject('in', low) | list }}"
+
+actions:
+  - if: "{{ lights | count == 0 }}"
+    then:
+      - set_conversation_response: >
+          {% if not area_ %}Welches Licht meinst du? Zum Beispiel: Licht im Büro heller.
+          {% else %}Im Bereich {{ room }} habe ich kein Licht gefunden.{% endif %}
+      - stop: "no light"
+
+  - choose:
+      - conditions: "{{ brighter }}"
+        sequence:
+          - if: "{{ lights_off | count > 0 }}"
+            then:
+              - action: light.turn_on
+                target:
+                  entity_id: "{{ lights_off }}"
+                data:
+                  transition: 1
+          - if: "{{ lights_on | count > 0 }}"
+            then:
+              - action: light.turn_on
+                target:
+                  entity_id: "{{ lights_on }}"
+                data:
+                  brightness_step_pct: "{{ step }}"
+                  transition: 1
+    default:
+      - if: "{{ lights_on | count == 0 }}"
+        then:
+          - set_conversation_response: "Das Licht ist schon aus."
+          - stop: "nothing on"
+      - if: "{{ high | count > 0 }}"
+        then:
+          - action: light.turn_on
+            target:
+              entity_id: "{{ high }}"
+            data:
+              brightness_step_pct: "{{ 0 - step }}"
+              transition: 1
+      - if: "{{ low | count > 0 }}"
+        then:
+          - action: light.turn_on
+            target:
+              entity_id: "{{ low }}"
+            data:
+              brightness_pct: "{{ min_ }}"
+              transition: 1
+
+  # wait until the new brightness is reported
+  - delay: 2
+  - variables:
+      values: >
+        {{ dimmable | select('is_state', 'on') | map('state_attr', 'brightness') | select('number') | list }}
+      pct: "{{ ((values | sum) / (values | count) / 2.55) | round(0) | int if values | count > 0 else -1 }}"
+  - action: script.display_answer
+    continue_on_error: true
+    data:
+      target: "{{ trigger.device_id }}"
+      title: "{{ ('Licht ' ~ room)[:16] }}"
+      value: "{{ (pct ~ ' %') if pct >= 0 else ('an' if brighter else 'dunkler') }}"
+      status: "on"
+      icon: lightbulb
+      duration: 3
+  - set_conversation_response: >
+      {{ 'Heller' if brighter else 'Dunkler' }}{{ ', jetzt ' ~ pct ~ ' Prozent' if pct >= 0 else '' }}.

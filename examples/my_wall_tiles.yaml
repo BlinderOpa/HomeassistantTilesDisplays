@@ -58,6 +58,16 @@ input_boolean:
     name: "Special alarm active"
     icon: mdi:alarm-plus
 
+timer:                                 # voice timer (optional)
+  voice_timer:
+    name: "Voice timer"
+    restore: true
+
+input_text:                            # voice timer (optional): remembers the satellite
+  voice_timer_device:
+    name: "Voice timer device"
+    max: 255
+
 input_datetime:                        # alarm clock (optional)
   alarm_workday:
     name: "Alarm workdays"
@@ -244,6 +254,38 @@ automation:
       input:
         special_time: input_datetime.alarm_special
         special_active: input_boolean.alarm_special
+  - id: voice_light_brightness
+    alias: "Voice: lights brighter/darker"
+    use_blueprint:
+      path: wall_tiles/voice_light_brightness.yaml
+      input: {}          # defaults: German sentences, 20 % step, never below 5 %
+  - id: voice_calendar
+    alias: "Voice: appointments"
+    use_blueprint:
+      path: wall_tiles/voice_calendar.yaml
+      input: {}          # all calendars with a label "Kalender <name>"
+  - id: voice_time_date
+    alias: "Voice: time and date"
+    use_blueprint:
+      path: wall_tiles/voice_time_date.yaml
+      input:
+        holiday_sensor: binary_sensor.public_holiday
+  - id: voice_timer
+    alias: "Voice: kitchen timer"
+    use_blueprint:
+      path: wall_tiles/voice_timer.yaml
+      input:
+        timer_entity: timer.voice_timer             # helpers: see "timer:" / "input_text:" above
+        device_text: input_text.voice_timer_device
+  - id: voice_ventilation
+    alias: "Voice: ventilation"
+    use_blueprint:
+      path: wall_tiles/voice_ventilation.yaml
+      input:
+        power_entity: switch.ventilation_power
+        mode_select: select.ventilation_mode
+        boost_script: script.ventilation_boost      # same as the humidity tile
+        normal_option: "home"                         # an option of your mode select
   - id: voice_shutters_group
     alias: "Voice: lower shutters up/down"
     use_blueprint:

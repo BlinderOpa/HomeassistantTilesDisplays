@@ -323,6 +323,11 @@ globals:
     restore_value: false
     initial_value: '0'
 
+  - id: resp_ticks
+    type: int
+    restore_value: false
+    initial_value: '0'
+
   # Antwort, die während einer Sprachausgabe eintraf (wird danach angezeigt)
   - id: pending_answer
     type: bool
@@ -914,7 +919,8 @@ script:
             "solar-power", "printer", "cart", "wifi", "bicycle-electric", "pump",
             "calendar", "lightbulb", "fire",
             "weather-sunny", "weather-night", "weather-partly-cloudy", "weather-cloudy", "weather-rainy", "weather-pouring", "weather-snowy", "weather-snowy-rainy", "weather-fog", "weather-hail", "weather-lightning", "weather-lightning-rainy", "weather-windy",
-            "alarm", "alarm-off"};
+            "alarm", "alarm-off",
+            "clock-outline", "timer-outline", "fan", "window-shutter", "window-shutter-open", "phone-missed", "printer-3d", "printer-3d-nozzle-alert"};
           std::string n = i_name;
           bool found = false;
           for (auto k : known) {
@@ -1651,6 +1657,62 @@ script:
             - lvgl.image.update:
                 id: answer_img
                 src: img_alarm_off
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "clock-outline";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_clock_outline
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "timer-outline";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_timer_outline
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "fan";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_fan
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "window-shutter";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_window_shutter
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "window-shutter-open";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_window_shutter_open
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "phone-missed";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_phone_missed
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "printer-3d";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_printer_3d
+      - if:
+          condition:
+            lambda: 'return id(answer_icon) == "printer-3d-nozzle-alert";'
+          then:
+            - lvgl.image.update:
+                id: answer_img
+                src: img_printer_3d_nozzle_alert
 
   - id: clear_response
     then:
@@ -1671,6 +1733,38 @@ script:
           then:
             - script.execute: clear_response
 
+# Sicherheitsnetz: gesprochener Satz verschwindet spätestens 20 s nachdem
+# Assistent und Sprachausgabe fertig sind, unabhängig von Ereignissen
+interval:
+  - interval: 1s
+    then:
+      - if:
+          condition:
+            lambda: |-
+              bool stale = !id(response_text).empty() && !id(answer_active) &&
+                           !id(question_active) && !id(pending_answer);
+              if (!stale) { id(resp_ticks) = 0; return false; }
+              return true;
+          then:
+            - if:
+                condition:
+                  or:
+                    - voice_assistant.is_running:
+                    - speaker.is_playing: board_speaker
+                then:
+                  - lambda: 'id(resp_ticks) = 0;'
+                else:
+                  - lambda: 'id(resp_ticks)++;'
+            - if:
+                condition:
+                  lambda: 'return id(resp_ticks) >= 20;'
+                then:
+                  - lambda: |-
+                      id(resp_ticks) = 0;
+                      id(assistant_active) = false;
+                      id(status_text) = "Bereit";
+                  - script.execute: clear_response
+
 # ----------------------------------------------------------------------------
 # Sprachassistent (ohne Wake Word, wird per Berührung gestartet)
 # ----------------------------------------------------------------------------
@@ -1688,7 +1782,9 @@ voice_assistant:
     - script.execute: session_watchdog
     - script.execute: apply_response
   on_stt_end:
-    - lambda: 'if (!x.empty()) id(session_commands)++;'
+    - lambda: |-
+        ESP_LOGI("stt", "Erkannter Text: '%s'", x.c_str());
+        if (!x.empty()) id(session_commands)++;
   on_stt_vad_end:
     - lambda: 'id(status_text) = "Verstehe...";'
     - lvgl.widget.refresh: status_label
@@ -1939,6 +2035,46 @@ image:
     transparency: alpha_channel
   - file: mdi:alarm-off
     id: img_alarm_off
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:clock-outline
+    id: img_clock_outline
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:timer-outline
+    id: img_timer_outline
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:fan
+    id: img_fan
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:window-shutter
+    id: img_window_shutter
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:window-shutter-open
+    id: img_window_shutter_open
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:phone-missed
+    id: img_phone_missed
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:printer-3d
+    id: img_printer_3d
+    resize: 40x40
+    type: RGB565
+    transparency: alpha_channel
+  - file: mdi:printer-3d-nozzle-alert
+    id: img_printer_3d_nozzle_alert
     resize: 40x40
     type: RGB565
     transparency: alpha_channel

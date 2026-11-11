@@ -10,7 +10,7 @@
 #   - Aktion cancel_question
 #   - Event esphome.display_question_answer  (yes | no | timeout | cancelled)
 #   - Event esphome.display_ready   (beim Verbinden mit Home Assistant)
-#   Icons: Basis-Set v1, aus v1.3 die Wetter-Icons und aus v1.13 alarm/alarm-off (für Sprachantworten
+#   Icons: Basis-Set v1, aus v1.3 die Wetter-Icons und aus v1.13 alarm/alarm-off, aus v1.14 clock-outline/timer-outline/fan/window-shutter(-open)/phone-missed/printer-3d(-nozzle-alert) (für Sprachantworten
 #   zum Wetter, wie beim C6). Die übrigen v1.3-Icons (Rollo, 3D-Drucker,
 #   Wärmepumpe, Lüftung) sind Kachel-Icons und fehlen hier; unbekanntes
 #   Icon wird zu "information".
@@ -382,7 +382,16 @@ globals:
         {"weather-windy",           "\U000F059D"},
         // v1.13: Wecker
         {"alarm",                   "\U000F0020"},
-        {"alarm-off",               "\U000F0023"}
+        {"alarm-off",               "\U000F0023"},
+        // v1.14: Uhrzeit, Timer, Lüftung, Rollos, Anrufe, 3D-Drucker
+        {"clock-outline",           "\U000F0150"},
+        {"timer-outline",           "\U000F051B"},
+        {"fan",                     "\U000F0210"},
+        {"window-shutter",          "\U000F111C"},
+        {"window-shutter-open",     "\U000F111E"},
+        {"phone-missed",            "\U000F03FA"},
+        {"printer-3d",              "\U000F042B"},
+        {"printer-3d-nozzle-alert", "\U000F11C0"}
       }
 
 # ---------------------------------------------------------------
@@ -1077,6 +1086,15 @@ font:
       # v1.13: Wecker
       - "\U000F0020"  # alarm
       - "\U000F0023"  # alarm-off
+      # v1.14: Uhrzeit, Timer, Lüftung, Rollos, Anrufe, 3D-Drucker
+      - "\U000F0150"  # clock-outline
+      - "\U000F051B"  # timer-outline
+      - "\U000F0210"  # fan
+      - "\U000F111C"  # window-shutter
+      - "\U000F111E"  # window-shutter-open
+      - "\U000F03FA"  # phone-missed
+      - "\U000F042B"  # printer-3d
+      - "\U000F11C0"  # printer-3d-nozzle-alert
 
   - file:
       type: web
