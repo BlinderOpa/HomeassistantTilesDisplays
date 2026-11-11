@@ -19,11 +19,11 @@
 {% endfor %}
 ## 2. Who pushes tiles to the displays? (more than one active per device = conflict)
 {% for s in states.automation
-   | selectattr('attributes.friendly_name', 'search', '(?i)push|tiles|kacheln') -%}
-- {{ s.state }} · {{ s.attributes.friendly_name }} ({{ s.entity_id }})
+   if s.attributes.get('friendly_name', s.entity_id) is search('(?i)push|kacheln.*senden') -%}
+- {{ s.state }} · {{ s.attributes.get('friendly_name', s.entity_id) }} ({{ s.entity_id }})
 {% endfor %}
 ## 3. Orphaned (still registered, but no YAML provides them any more) → delete in Settings → Entities
-{% for s in states | selectattr('attributes.restored', 'eq', true) -%}
+{% for s in states | selectattr('attributes.restored', 'defined') | selectattr('attributes.restored', 'eq', true) -%}
 - {{ s.entity_id }}
 {% else %}- none
 {% endfor %}
@@ -34,12 +34,7 @@
 - {{ s.state }} · {{ s.entity_id }}
 {% else %}- none
 {% endfor %}
-## 5. Automations not triggered for 30 days (candidates for obsolete; seasonal ones are fine)
-{% for s in states.automation
-   if s.attributes.last_triggered is none or s.attributes.last_triggered < now() - timedelta(days=30) -%}
-- {{ s.attributes.last_triggered.strftime('%Y-%m-%d') if s.attributes.last_triggered else 'never' }} · {{ s.attributes.friendly_name }}
-{% endfor %}
-## 6. Tiles without the label "Display" (the collector ignores them)
+## 5. Tiles without the label "Display" (the collector ignores them)
 {% for e in ids | select('match', 'sensor\\.tile_') if e not in label_entities('Display') -%}
 - {{ e }}
 {% else %}- none

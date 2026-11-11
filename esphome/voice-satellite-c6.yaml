@@ -783,6 +783,14 @@ script:
                       id(status_text) = "Bereit";
                       id(idle_ticks) = 0;
                   - script.execute: apply_response
+                  # wie on_idle: wartende Antwort zeigen, sonst den Satz nach 20 s ausblenden
+                  - if:
+                      condition:
+                        lambda: 'return id(pending_answer);'
+                      then:
+                        - script.execute: show_pending
+                      else:
+                        - script.execute: auto_clear
 
   # Status, Hinweistext und Abbrechen-Knopf aktualisieren
   - id: apply_ui
@@ -1717,6 +1725,7 @@ voice_assistant:
               id(assistant_active) = false;
               id(status_text) = "Bereit";
           - script.execute: apply_response
+          - script.execute: auto_clear
         else:
           - script.execute:
               id: display_answer
