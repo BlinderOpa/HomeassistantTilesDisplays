@@ -10,7 +10,7 @@
 #   - Aktion cancel_question
 #   - Event esphome.display_question_answer  (yes | no | timeout | cancelled)
 #   - Event esphome.display_ready   (beim Verbinden mit Home Assistant)
-#   Icons: Basis-Set v1 und aus v1.3 die Wetter-Icons (für Sprachantworten
+#   Icons: Basis-Set v1, aus v1.3 die Wetter-Icons und aus v1.13 alarm/alarm-off, aus v1.14 clock-outline/timer-outline/fan/window-shutter(-open)/phone-missed/printer-3d(-nozzle-alert) (für Sprachantworten
 #   zum Wetter, wie beim C6). Die übrigen v1.3-Icons (Rollo, 3D-Drucker,
 #   Wärmepumpe, Lüftung) sind Kachel-Icons und fehlen hier; unbekanntes
 #   Icon wird zu "information".
@@ -28,6 +28,17 @@
 #     Sprachausgabe, show_answer, show_question, Tastendruck und OTA.
 #     Nachtmodus (Schalter "Display Nachtmodus", von HA geschaltet): stattdessen
 #     "Display Wachzeit" Sekunden. Die Helligkeit bleibt dabei erhalten.
+#     Schaltet Home Assistant die Display-Helligkeit selbst ein (z. B. Blueprint
+#     wake_light als zusätzliches Weck-Licht), bleibt sie an, bis HA sie wieder
+#     ausschaltet – das Timeout greift dann nicht.
+#   - Ruheanzeige: Uhrzeit groß + Wochentag/Datum, sobald kein Satz angezeigt
+#     wird (Zeit von Home Assistant).
+#   - Display-Treiber mipi_spi mit dem tatsächlichen Controller GC9107 (statt des
+#     veralteten st7735). Farben/Versatz bei Bedarf per substitutions anpassen.
+#   - Flash 8 MB (so ist das Board bestückt) statt ESPHome-Standard 4 MB.
+#     ACHTUNG: Die Umstellung ändert die Partitionstabelle und muss EINMAL per
+#     USB geflasht werden; danach geht OTA wieder. Gespeicherte Einstellungen
+#     (Helligkeit, Timeout …) starten dabei neu mit den Standardwerten.
 #
 # In Home Assistant muss beim Gerät "Gerät darf Home-Assistant-Aktionen
 # ausführen" aktiviert sein, sonst kommen die Events nicht an.
@@ -49,6 +60,14 @@ substitutions:
   antwort_standard_s: "8"
   # Standard-Timeout für show_question, wenn timeout <= 0 gesendet wird
   frage_standard_s: "30"
+  # Display (GC9107, mipi_spi). Nur ändern, wenn das Bild nicht passt:
+  #   Farben invertiert (Schwarz erscheint weiß)  -> display_invert umstellen
+  #   Rot und Blau vertauscht                     -> display_color_order bgr/rgb
+  #   Bild verschoben, Streifen mit Pixelmüll     -> display_offset_y (z. B. 32)
+  display_invert: "true"
+  display_color_order: "rgb"
+  display_offset_x: "0"
+  display_offset_y: "0"
 
 esphome:
   name: ${node_name}
@@ -57,12 +76,16 @@ esphome:
     # Wake-Word-Erkennung erst starten, wenn alles andere läuft
     - priority: -100
       then:
+        # Wiederherstellen der Helligkeit beim Start zählt nicht als "von HA"
+        - lambda: 'id(backlight_hold) = false;'
         - script.execute: display_wake
         - micro_wake_word.start:
 
 esp32:
   board: esp32-s3-devkitc-1
   variant: esp32s3
+  # Board hat 8 MB Flash; größere App-Partition. Umstellung einmal per USB flashen.
+  flash_size: 8MB
   framework:
     type: esp-idf
 
@@ -252,6 +275,18 @@ globals:
     restore_value: false
     initial_value: 'false'
 
+  # Display-Licht: true, solange das Gerät selbst schaltet (Timeout/Wecken)
+  - id: backlight_local
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
+  # Display-Licht von Home Assistant eingeschaltet → kein Timeout
+  - id: backlight_hold
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
   # true während eines OTA-Updates (Wake Word nicht neu starten)
   - id: ota_running
     type: bool
@@ -360,7 +395,19 @@ globals:
         {"weather-hail",            "\U000F0592"},
         {"weather-lightning",       "\U000F0593"},
         {"weather-lightning-rainy", "\U000F067E"},
-        {"weather-windy",           "\U000F059D"}
+        {"weather-windy",           "\U000F059D"},
+        // v1.13: Wecker
+        {"alarm",                   "\U000F0020"},
+        {"alarm-off",               "\U000F0023"},
+        // v1.14: Uhrzeit, Timer, Lüftung, Rollos, Anrufe, 3D-Drucker
+        {"clock-outline",           "\U000F0150"},
+        {"timer-outline",           "\U000F051B"},
+        {"fan",                     "\U000F0210"},
+        {"window-shutter",          "\U000F111C"},
+        {"window-shutter-open",     "\U000F111E"},
+        {"phone-missed",            "\U000F03FA"},
+        {"printer-3d",              "\U000F042B"},
+        {"printer-3d-nozzle-alert", "\U000F11C0"}
       }
 
 # ---------------------------------------------------------------
@@ -376,6 +423,11 @@ spi:
   clk_pin: GPIO38
   mosi_pin: GPIO39
 
+# Uhrzeit von Home Assistant (Ruheanzeige)
+time:
+  - platform: homeassistant
+    id: ha_time
+
 # ---------------------------------------------------------------
 # Display und Beleuchtung
 # ---------------------------------------------------------------
@@ -388,20 +440,25 @@ output:
     # Falls 100 % dunkel und 0 % hell ist: nächste Zeile einkommentieren
     # inverted: true
 
+# Controller laut Waveshare: GC9107, 128×128 (Controller-RAM 128×160)
 display:
-  - platform: st7735
-    model: INITR_GREENTAB
-    device_width: 128
-    device_height: 128
-    col_start: 0
-    row_start: 0
+  - platform: mipi_spi
+    model: GC9107
+    id: lcd_display
     cs_pin: GPIO21
     dc_pin: GPIO45
     reset_pin: GPIO40
-    rotation: 0
-    # Panel zeigt sonst Schwarz als Weiß und Grün als Magenta
-    invert_colors: true
-    id: lcd_display
+    data_rate: 40MHz
+    dimensions:
+      width: 128
+      height: 128
+      offset_width: ${display_offset_x}
+      offset_height: ${display_offset_y}
+    invert_colors: ${display_invert}
+    color_order: ${display_color_order}
+    # LVGL zeichnet selbst neu; kein eigener Bildpuffer im Treiber nötig
+    auto_clear_enabled: false
+    update_interval: never
 
 light:
   - platform: esp32_rmt_led_strip
@@ -425,6 +482,14 @@ light:
     restore_mode: RESTORE_DEFAULT_ON
     default_transition_length: 300ms
     gamma_correct: 2.8
+    # Änderung von außen (Home Assistant) erkennen: an = halten, aus = Timeout wieder normal
+    on_state:
+      - lambda: |-
+          if (id(backlight_local)) {
+            id(backlight_local) = false;
+            return;
+          }
+          id(backlight_hold) = id(display_backlight).remote_values.is_on();
 
 # ---------------------------------------------------------------
 # Audio
@@ -544,6 +609,7 @@ script:
           condition:
             light.is_off: display_backlight
           then:
+            - lambda: 'id(backlight_local) = true;'
             - light.turn_on:
                 id: display_backlight
                 transition_length: 200ms
@@ -577,9 +643,15 @@ script:
                       then:
                         - delay: 1s
                   - delay: 5s
-            - light.turn_off:
-                id: display_backlight
-                transition_length: 400ms
+            # von Home Assistant eingeschaltet (z. B. Weck-Licht): anlassen
+            - if:
+                condition:
+                  lambda: 'return !id(backlight_hold);'
+                then:
+                  - lambda: 'id(backlight_local) = true;'
+                  - light.turn_off:
+                      id: display_backlight
+                      transition_length: 400ms
 
   # Erfolg: kurz grün, dann aus
   - id: led_success
@@ -709,6 +781,36 @@ script:
       - delay: !lambda 'return id(tts_text).size() > 60 ? 40000 : 20000;'
       - lambda: 'id(tts_text) = "";'
       - lvgl.widget.refresh: response_label
+      - script.execute: idle_view
+
+  # Ruheanzeige: Uhrzeit, wenn kein Satz angezeigt wird und die Zeit bekannt ist
+  - id: idle_view
+    then:
+      - if:
+          condition:
+            lambda: 'return id(tts_text).empty() && id(ha_connected) && id(ha_time).now().is_valid();'
+          then:
+            - lvgl.label.update:
+                id: clock_label
+                text: !lambda |-
+                  static std::string t;
+                  t = id(ha_time).now().strftime("%H:%M");
+                  return t.c_str();
+            - lvgl.label.update:
+                id: date_label
+                text: !lambda |-
+                  static const char *const tage[] = {"So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"};
+                  auto n = id(ha_time).now();
+                  static std::string d;
+                  d = std::string(tage[(n.day_of_week - 1) % 7]) + " " + n.strftime("%d.%m.");
+                  return d.c_str();
+            - lvgl.widget.hide: response_label
+            - lvgl.widget.show: clock_label
+            - lvgl.widget.show: date_label
+          else:
+            - lvgl.widget.hide: clock_label
+            - lvgl.widget.hide: date_label
+            - lvgl.widget.show: response_label
 
 # ---------------------------------------------------------------
 # Intervalle
@@ -730,6 +832,11 @@ interval:
                   speaker.is_playing: onboard_speaker
           then:
             - micro_wake_word.start:
+
+  # Ruheanzeige (Uhrzeit) aktuell halten
+  - interval: 5s
+    then:
+      - script.execute: idle_view
 
   # Verbindung zu Home Assistant prüfen und Anzeige bei Änderung umschalten.
   # state_subscription_only: zählt nur Home Assistant, nicht das Log-Fenster.
@@ -813,6 +920,7 @@ voice_assistant:
         id(status_text) = "Spreche...";
         id(tts_text) = x;
     - lvgl.widget.refresh: response_label
+    - script.execute: idle_view
     - lvgl.widget.refresh: status_label
   # Alles fertig (auch die Sprachausgabe)
   on_idle:
@@ -941,6 +1049,16 @@ font:
     glyphsets: [GF_Latin_Core]
     ignore_missing_glyphs: true
 
+  # Uhrzeit der Ruheanzeige (nur Ziffern und Doppelpunkt)
+  - file:
+      type: gfonts
+      family: "Roboto"
+      weight: 700
+      italic: false
+    id: font_clock
+    size: 44
+    glyphs: "0123456789:"
+
   # Icons: Material Design Icons, nur das Basis-Set v1
   - file:
       type: web
@@ -986,6 +1104,18 @@ font:
       - "\U000F0593"  # weather-lightning
       - "\U000F067E"  # weather-lightning-rainy
       - "\U000F059D"  # weather-windy
+      # v1.13: Wecker
+      - "\U000F0020"  # alarm
+      - "\U000F0023"  # alarm-off
+      # v1.14: Uhrzeit, Timer, Lüftung, Rollos, Anrufe, 3D-Drucker
+      - "\U000F0150"  # clock-outline
+      - "\U000F051B"  # timer-outline
+      - "\U000F0210"  # fan
+      - "\U000F111C"  # window-shutter
+      - "\U000F111E"  # window-shutter-open
+      - "\U000F03FA"  # phone-missed
+      - "\U000F042B"  # printer-3d
+      - "\U000F11C0"  # printer-3d-nozzle-alert
 
   - file:
       type: web
@@ -1064,6 +1194,21 @@ lvgl:
                   text_color: "0xFFFFFF"
                   text_font: font_text
                   width: 110
+                  text_align: center
+              # Ruheanzeige (sichtbar über Skript idle_view)
+              - label:
+                  id: clock_label
+                  hidden: true
+                  text: ""
+                  text_color: "0xFFFFFF"
+                  text_font: font_clock
+                  text_align: center
+              - label:
+                  id: date_label
+                  hidden: true
+                  text: ""
+                  text_color: "0x9E9E9E"
+                  text_font: font_text
                   text_align: center
 
   # Überlagerungen über der Normalansicht
