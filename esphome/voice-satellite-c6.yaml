@@ -649,6 +649,17 @@ switch:
 # ----------------------------------------------------------------------------
 # Skripte
 # ----------------------------------------------------------------------------
+text_sensor:
+  # Geräte-Steckbrief für Home Assistant (Schnittstelle 4.10): HA findet das Gerät darüber
+  # selbst und weiß, was es kann – keine Zuordnungsliste in display_answer nötig.
+  - platform: template
+    name: "Display-Info"
+    id: display_info
+    icon: mdi:card-account-details-outline
+    entity_category: diagnostic
+    update_interval: 60s
+    lambda: 'return {"node=${node_name};type=satellite;size=medium;voice=yes;tiles=yes"};'
+
 script:
   # Nach der Sprachausgabe noch einmal zuhören (nur wenn HA es verlangt und der
   # Schalter "Folgebefehle" an ist); 1,2 s Pause, damit der Nachhall nicht mitgehört wird

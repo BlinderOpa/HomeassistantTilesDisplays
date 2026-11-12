@@ -7,23 +7,29 @@ blueprint:
     Create a script from this blueprint with the entity id **script.display_answer**
     (the packages and voice blueprints call it by that name).
 
-    Field "target": a device id (e.g. trigger.device_id of a conversation trigger),
-    "wall" (the wall display) or "all".
+    Devices are found automatically: every device of this repository has a diagnostic sensor
+    "Display-Info" (node=…;type=…;size=…;voice=…;tiles=…, interface 4.10). No list needed.
+
+    Field "target": a device id (e.g. trigger.device_id of a conversation trigger), an ESPHome
+    node name, "wall" (all wall displays), "satellites" (all voice satellites), "voice"
+    (every device with voice) or "all".
   domain: script
   source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/script/wall_tiles/display_answer.yaml
   input:
     devices:
-      name: Devices
+      name: Extra devices (optional, legacy)
       description: >
-        Mapping "ESPHome node name: one entity of that device". The entity is only used
-        to find the device id. Example:
-          wall-display: number.wall_display_display_wachzeit
-          voice-satellite-1: select.voice_satellite_1_assistant
+        Only for devices WITHOUT the "Display-Info" sensor (older firmware or own devices):
+        mapping "ESPHome node name: one entity of that device" (used to find the device id), e.g.
+          my-old-display: select.my_old_display_assistant
+        Leave empty when all devices run the current firmware.
+      default: {}
       selector:
         object:
     wall_node:
-      name: Node name of the wall display (target "wall")
-      default: "wall-display"
+      name: Wall display node name (optional, legacy)
+      description: Used for target "wall" only if no wall display reports itself via "Display-Info".
+      default: ""
       selector:
         text:
 
@@ -32,7 +38,7 @@ max: 10
 
 fields:
   target:
-    description: "Device id (e.g. trigger.device_id), 'wall' or 'all'"
+    description: "Device id (e.g. trigger.device_id), node name, 'wall', 'satellites', 'voice' or 'all'"
     example: "all"
   title:
     example: "Zug 06:42"
@@ -58,19 +64,42 @@ fields:
 variables:
   devices_: !input devices
   wall_: !input wall_node
+  # every device that reports itself: sensor.*_display_info = "node=…;type=…;size=…;voice=…;tiles=…"
+  found: >
+    {% set ns = namespace(l=[]) %}
+    {% for e in integration_entities('esphome')
+         if e.startswith('sensor.') and e.endswith('_display_info') %}
+      {% set s = states(e) %}
+      {% set node = s | regex_findall('node=([^;]+)') | first | default('') %}
+      {% if node %}
+        {% set ns.l = ns.l + [{
+          'node': node,
+          'dev': device_id(e),
+          'type': s | regex_findall('type=([^;]+)') | first | default(''),
+          'voice': s | regex_findall('voice=([^;]+)') | first | default('')
+        }] %}
+      {% endif %}
+    {% endfor %}
+    {{ ns.l }}
   nodes: >
-    {% set z = target | default('') %}
-    {% if z == 'all' %}
-      {{ devices_.keys() | list }}
-    {% elif z == 'wall' %}
-      {{ [wall_] }}
-    {% else %}
-      {% set ns = namespace(n=[]) %}
-      {% for node, ent in devices_.items() if device_id(ent) == z %}
-        {% set ns.n = ns.n + [node] %}
-      {% endfor %}
-      {{ ns.n }}
+    {% set z = target | default('') | string %}
+    {% set ns = namespace(n=[]) %}
+    {% for d in found %}
+      {% if z == 'all' or z == d.dev or z == d.node
+            or (z == 'wall' and d.type == 'wall')
+            or (z == 'satellites' and d.type == 'satellite')
+            or (z == 'voice' and d.voice == 'yes') %}
+        {% set ns.n = ns.n + [d.node] %}
+      {% endif %}
+    {% endfor %}
+    {% for node, ent in (devices_ or {}).items()
+         if z in ['all', node] or device_id(ent) == z %}
+      {% set ns.n = ns.n + [node] %}
+    {% endfor %}
+    {% if z == 'wall' and ns.n | count == 0 and wall_ %}
+      {% set ns.n = [wall_] %}
     {% endif %}
+    {{ ns.n | unique | list }}
 
 sequence:
   - repeat:

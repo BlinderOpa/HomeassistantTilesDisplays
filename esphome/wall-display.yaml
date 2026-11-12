@@ -554,6 +554,16 @@ sensor:
       - lvgl.widget.refresh: fc_maxmin
 
 text_sensor:
+  # Geräte-Steckbrief für Home Assistant (Schnittstelle 4.10): HA findet das Gerät darüber
+  # selbst und weiß, was es kann – keine Zuordnungsliste in display_answer nötig.
+  - platform: template
+    name: "Display-Info"
+    id: display_info
+    icon: mdi:card-account-details-outline
+    entity_category: diagnostic
+    update_interval: 60s
+    lambda: 'return {"node=${node_name};type=wall;size=large;voice=no;tiles=yes"};'
+
   - platform: homeassistant
     id: ws_komfort
     entity_id: sensor.ws_comfort

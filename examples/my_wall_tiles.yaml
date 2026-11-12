@@ -11,12 +11,11 @@ script:
     alias: "Display: show answer"
     use_blueprint:
       path: wall_tiles/display_answer.yaml
-      input:
-        devices:
-          my-wall-display: number.my_wall_display_display_wachzeit   # any entity of the device
-          my-voice-s3: select.my_voice_s3_assistant
-          my-voice-c6: select.my_voice_c6_assistant
-        wall_node: my-wall-display
+      input: {}
+        # nothing to enter: devices are found via their sensor "Display-Info".
+        # Only devices WITHOUT that sensor (older firmware) would be listed here:
+        # devices:
+        #   my-old-display: select.my_old_display_assistant
 
   # shutters (used by the two shutter tiles and the voice group command)
   shutters_evening_down:

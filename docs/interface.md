@@ -1,4 +1,4 @@
-# Interface: Home Assistant ↔ displays (v1.15)
+# Interface: Home Assistant ↔ displays (v1.16)
 
 Applies to every device that shows tiles or answers. Reference devices:
 
@@ -62,7 +62,7 @@ api:
 ```
 
 Satellites: if `show_answer` arrives while speaking, show it after the speech ends.
-HA side: always through `script.display_answer` (blueprint `display_answer.yaml`), field `target` = device id / `wall` / `all`.
+HA side: always through `script.display_answer` (blueprint `display_answer.yaml`), field `target` = device id / node name / `wall` / `satellites` / `voice` / `all`. Devices are found via their `Display-Info` sensor (4.10).
 
 ## 3. Yes/no: `show_question`, `cancel_question`, event `esphome.display_question_answer`
 
@@ -261,6 +261,27 @@ until the spoken answer is over, pauses 1.2 s and listens again; silence ends th
 a recognised command allows the next follow-up. Devices without the action ignore it. The switch
 `Folgebefehle` on the C6 (default on) can turn this off. Typical use: "Rollo hoch", then "Rollo stop".
 
+### 4.10 Sensor `Display-Info` (all devices)
+
+Every device reports what it is, as a diagnostic text sensor (in HA `sensor.<device>_display_info`):
+
+```
+node=wall-display;type=wall;size=large;voice=no;tiles=yes
+```
+
+| key | values | meaning |
+|---|---|---|
+| `node` | ESPHome node name | needed for the API actions (`esphome.<node>_show_answer` …) |
+| `type` | `wall`, `satellite` | kind of device |
+| `size` | `large` (7"), `medium` (C6), `small` (S3) | display size class |
+| `voice` | `yes`, `no` | has a microphone / voice assistant |
+| `tiles` | `yes`, `no` | implements `set_tiles` |
+
+The values are fixed in each firmware (the firmware knows its hardware). HA finds all devices
+by this sensor, so `display_answer` needs no mapping list any more; a new device only has to be
+flashed. Keys may be added later; HA ignores unknown keys. Devices without the sensor can still
+be listed in the optional `devices` input of `display_answer`.
+
 ## 5. What each device implements
 
 | | S3 | C6 | 7" |
@@ -276,6 +297,7 @@ a recognised command allows the next follow-up. Devices without the action ignor
 | `set_background` | – | – | ✅ |
 | night mode (switch "Display Nachtmodus", number "Display Wachzeit") | ✅ | ✅ | ✅ |
 | `set_calendar` | – | – | optional (calendar package) |
+| sensor `Display-Info` (4.10) | ✅ | ✅ | ✅ |
 
 ## Change rules
 
@@ -283,6 +305,7 @@ New fields only as optional fields with a default (old devices ignore unknown JS
 New icons go into 1.2 first, then into the devices. Incompatible changes bump the major version.
 
 ### Changelog
+- v1.16: sensor `Display-Info` (4.10) on all three devices; `display_answer` finds the devices by it (the `devices` list is optional now) and knows the targets `satellites` and `voice` and node names. All three firmwares change.
 - v1.15: 7" without brightness: number `Display Helligkeit` and the dimming overlay removed (the backlight is on/off only; use the night mode, 4.8). Display `update_interval: never` (LVGL redraws itself), `min_version` 2026.9.0. HA: identify the 7" in `display_answer` by another entity (e.g. `number.<node>_display_wachzeit`); `display_brightness` without `brightness_entity`. Only the 7" firmware changes.
 - v1.14: icons `clock-outline`, `timer-outline`, `fan` (voice blueprints time/date, timer, ventilation) on all devices; S3 and C6 also get `window-shutter`, `window-shutter-open`, `phone-missed`, `printer-3d`, `printer-3d-nozzle-alert` (voice answers); the 7" also gets `alarm`, `alarm-off`, `battery-charging`, `progress-clock`, `school` (tile icons). Firmware of all three devices changes (new glyphs only).
 - v1.13: icons `alarm` and `alarm-off` (1.2) for the voice blueprint "alarm clock"; only S3 and C6 firmware change (the 7" has no voice).
