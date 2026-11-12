@@ -63,11 +63,16 @@ substitutions:
   # Display (GC9107, mipi_spi). Nur ändern, wenn das Bild nicht passt:
   #   Farben invertiert (Schwarz erscheint weiß)  -> display_invert umstellen
   #   Rot und Blau vertauscht                     -> display_color_order bgr/rgb
-  #   Bild verschoben, Streifen mit Pixelmüll     -> display_offset_y (z. B. 32)
+  #   Bild verschoben, Streifen am Rand           -> display_offset_x / _y
+  #     (Streifen links/rechts: offset_x, oben/unten: offset_y; in 1er-Schritten)
+  #   Bild steht auf dem Kopf                     -> display_mirror_x und _y umstellen
   display_invert: "true"
   display_color_order: "rgb"
   display_offset_x: "0"
   display_offset_y: "0"
+  # 180° gedreht wie beim alten st7735-Treiber (der spiegelte beide Achsen)
+  display_mirror_x: "true"
+  display_mirror_y: "true"
 
 esphome:
   name: ${node_name}
@@ -456,6 +461,11 @@ display:
       offset_height: ${display_offset_y}
     invert_colors: ${display_invert}
     color_order: ${display_color_order}
+    # Ausrichtung im Gehäuse: beide Achsen gespiegelt = 180° gedreht
+    transform:
+      swap_xy: false
+      mirror_x: ${display_mirror_x}
+      mirror_y: ${display_mirror_y}
     # LVGL zeichnet selbst neu; kein eigener Bildpuffer im Treiber nötig
     auto_clear_enabled: false
     update_interval: never
