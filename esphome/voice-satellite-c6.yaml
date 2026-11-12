@@ -33,7 +33,7 @@
 #   CS=GPIO17, gleicher Bus wie das Display) und PMIC AXP2101 (I2C, läuft mit
 #   Standardwerten).
 # Die Icons (MDI) lädt ESPHome beim Kompilieren aus dem Internet.
-# Nicht gegen ESPHome 2026.10 kompiliert.
+# Nicht gegen ESPHome 2026.10 kompiliert. Display-Treiber mipi_spi ungetestet.
 
 substitutions:
   # Override these in your own device file (see esphome/examples/), so the
@@ -400,20 +400,27 @@ light:
 # ----------------------------------------------------------------------------
 # Display Konfiguration (CS = GPIO 5, DC = GPIO 3, RST = GPIO 4)
 # ----------------------------------------------------------------------------
+# Treiber mipi_spi (Nachfolger von ili9xxx, der als veraltet gilt). Zurück zum
+# alten Treiber: "platform: ili9xxx" und "rotation: 0" statt "0°".
+# Sieht das Bild falsch aus: color_order (bgr | rgb), invert_colors, Offsets
+# (offset_width/offset_height) oder data_rate (z. B. 20MHz) anpassen.
 display:
-  - platform: ili9xxx
+  - platform: mipi_spi
     model: ST7789V
     id: my_display
     spi_id: spi_bus
     cs_pin: GPIO5
     dc_pin: GPIO3
     reset_pin: GPIO4
-    rotation: 0
+    rotation: 0°
     data_rate: 40MHz
     invert_colors: true
+    color_order: bgr
     dimensions:
       width: 240
       height: 284
+      offset_width: 0
+      offset_height: 0
 
 # ----------------------------------------------------------------------------
 # Touchscreen (Interrupt = GPIO 11, Reset = GPIO 4 gemeinsam mit dem Display)

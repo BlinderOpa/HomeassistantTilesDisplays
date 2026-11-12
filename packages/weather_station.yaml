@@ -7,7 +7,7 @@
 #   weather entity: nothing to do – the blueprints pick the first available one and fall back
 #                   automatically (e.g. Met.no 503). With several weather services set weather_entity.
 #   sensor.indoor_temperature / sensor.indoor_humidity   the room the display hangs in
-#   Display brightness: blueprint "Wall tiles: display brightness by time of day".
+#   Display at night: blueprint "Wall tiles: display brightness by time of day" (night mode).
 template:
   # ---------- outdoor ----------
   - sensor:

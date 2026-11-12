@@ -27,7 +27,7 @@ substitutions:
 esphome:
   name: ${node_name}
   friendly_name: ${friendly_name}
-  min_version: 2025.5.0
+  min_version: 2026.9.0   # OTA-Verschlüsselung (ota: encryption:) gibt es erst ab 2026.9
   project:
     name: "Waveshare.ESP32-S3-touch-lcd-7"
     version: "3.0"
@@ -35,10 +35,7 @@ esphome:
     priority: -100   # nach allen Komponenten inkl. LVGL
     then:
       - lambda: 'id(boot_done) = true;'
-      # Gespeicherte Helligkeit und Backlight-Zustand nach Neustart anwenden
-      - script.execute:
-          id: apply_dimming
-          level: !lambda 'return id(display_helligkeit).state;'
+      # Gespeicherten Backlight-/Nachtmodus-Zustand nach Neustart anwenden
       - script.execute: apply_backlight
 
 esp32:
@@ -360,7 +357,7 @@ i2c:
   - id: bus_a
     sda: GPIO8
     scl: GPIO9
-    scan: true
+    scan: false
 
 ch422g:
   - id: ch422g_hub
@@ -395,7 +392,7 @@ display:
     model: ESP32-S3-TOUCH-LCD-7-800X480
     id: my_display
     rotation: 0
-    update_interval: 1s
+    update_interval: never   # LVGL zeichnet selbst neu, wenn sich etwas ändert
     auto_clear_enabled: false
     color_order: RGB
     pclk_frequency: 16MHZ
@@ -427,10 +424,9 @@ display:
       green: [39, 0, 45, 48, 47, 21]
 
 # ============================================================================
-# Display: An/Aus + Dimmen (HA steuert die Helligkeit nach Tageszeit)
-# Backlight hängt an CH422G EXIO2 (nur an/aus, kein PWM). Der Pin wird vom
-# Display-Treiber belegt, daher direkt über den Expander schalten.
-# Dimmen geschieht über ein schwarzes LVGL-Overlay (dim_overlay).
+# Display: An/Aus und Nachtmodus
+# Backlight hängt an CH422G EXIO2 (nur an/aus, kein PWM, daher keine Helligkeit).
+# Der Pin wird vom Display-Treiber belegt, daher direkt über den Expander schalten.
 # ============================================================================
 
 switch:
@@ -477,23 +473,6 @@ number:
     optimistic: true
     restore_value: true
     initial_value: 30
-
-  - platform: template
-    name: "Display Helligkeit"
-    id: display_helligkeit
-    icon: mdi:brightness-6
-    unit_of_measurement: "%"
-    min_value: 10
-    max_value: 100
-    step: 5
-    mode: slider
-    optimistic: true
-    restore_value: true
-    initial_value: 100
-    set_action:
-      - script.execute:
-          id: apply_dimming
-          level: !lambda 'return x;'
 
 # ============================================================================
 # Zeit: von HA; SNTP als Rückfall, damit die Uhr auch ohne HA läuft
@@ -801,19 +780,6 @@ script:
       - delay: !lambda 'return (uint32_t) (isnan(id(wake_seconds).state) ? 30 : id(wake_seconds).state) * 1000;'
       - lambda: 'id(night_awake) = false;'
       - script.execute: apply_backlight
-
-  - id: apply_dimming
-    parameters:
-      level: float
-    then:
-      - lambda: |-
-          // 100 % -> Overlay unsichtbar, 10 % -> Overlay ~90 % deckend
-          float l = level;
-          if (isnan(l)) l = 100.0f;
-          if (l < 10.0f) l = 10.0f;
-          if (l > 100.0f) l = 100.0f;
-          uint8_t opa = (uint8_t) ((100.0f - l) / 100.0f * 255.0f);
-          lv_obj_set_style_bg_opa(id(dim_overlay), opa, LV_PART_MAIN);
 
   - id: answer_timer
     mode: restart
@@ -2103,21 +2069,6 @@ lvgl:
                             text_font: f26b
                             text_color: 0xFFFFFF
                             text: "Nein"
-
-      # ---------------- Abdunkel-Overlay (immer oberste Ebene) ----------------
-      - obj:
-          id: dim_overlay
-          x: 0
-          y: 0
-          width: 100%
-          height: 100%
-          bg_color: 0x000000
-          bg_opa: TRANSP
-          border_width: 0
-          radius: 0
-          pad_all: 0
-          clickable: false
-          scrollable: false
 
   pages:
     - id: page_wetter

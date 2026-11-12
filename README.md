@@ -73,7 +73,7 @@ blueprints/
     tile_tap_handler          tap on a tile → toggle / run action        (once)
     tiles_push                send tiles to one ESPHome display          (per display)
     calendar_push             send the week calendar to the wall display (with wall_calendar)
-    display_brightness        day / evening / night brightness, optional night mode (7": dark, tap wakes)
+    display_brightness        night mode by time (dark at night, a tap wakes); brightness only where a number exists
     weather_background        faded photo behind the base view, chosen by the current weather
     appliance_done_detect     sets the "done" flag of an appliance
     voice_ack_tile            "Müll ist draußen" = tap by voice

@@ -17,7 +17,7 @@ blueprint:
       description: >
         Mapping "ESPHome node name: one entity of that device". The entity is only used
         to find the device id. Example:
-          wall-display: number.wall_display_brightness
+          wall-display: number.wall_display_display_wachzeit
           voice-satellite-1: select.voice_satellite_1_assistant
       selector:
         object:

@@ -1,4 +1,4 @@
-# Interface: Home Assistant ↔ displays (v1.14)
+# Interface: Home Assistant ↔ displays (v1.15)
 
 Applies to every device that shows tiles or answers. Reference devices:
 
@@ -143,7 +143,7 @@ HA decides what happens (blueprint `tile_tap_handler.yaml`). Voice commands send
 ### 4.4 Event `esphome.display_ready`
 
 Sent by the device on `api: on_client_connected`; HA answers with an immediate `set_tiles`
-(and sets the brightness).
+(and the brightness or night mode).
 
 ### 4.5 Weather-station base view (7")
 
@@ -283,6 +283,7 @@ New fields only as optional fields with a default (old devices ignore unknown JS
 New icons go into 1.2 first, then into the devices. Incompatible changes bump the major version.
 
 ### Changelog
+- v1.15: 7" without brightness: number `Display Helligkeit` and the dimming overlay removed (the backlight is on/off only; use the night mode, 4.8). Display `update_interval: never` (LVGL redraws itself), `min_version` 2026.9.0. HA: identify the 7" in `display_answer` by another entity (e.g. `number.<node>_display_wachzeit`); `display_brightness` without `brightness_entity`. Only the 7" firmware changes.
 - v1.14: icons `clock-outline`, `timer-outline`, `fan` (voice blueprints time/date, timer, ventilation) on all devices; S3 and C6 also get `window-shutter`, `window-shutter-open`, `phone-missed`, `printer-3d`, `printer-3d-nozzle-alert` (voice answers); the 7" also gets `alarm`, `alarm-off`, `battery-charging`, `progress-clock`, `school` (tile icons). Firmware of all three devices changes (new glyphs only).
 - v1.13: icons `alarm` and `alarm-off` (1.2) for the voice blueprint "alarm clock"; only S3 and C6 firmware change (the 7" has no voice).
 - v1.12: display sleep and night mode for the S3 (4.8): number `Display-Timeout`, switch `Display Nachtmodus`, number `Display Wachzeit`; the backlight goes on briefly for every response. Only the S3 firmware changes.

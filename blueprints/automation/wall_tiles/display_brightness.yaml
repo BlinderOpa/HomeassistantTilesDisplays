@@ -4,7 +4,9 @@ blueprint:
     Sets a display's brightness: bright during the day, dimmed after sunset, dark at night.
     Optionally switches the display's night mode during the night: backlight off,
     a tap wakes the display for a short time (wake time = number "Display Wachzeit" on the device).
-    Works for the 7" wall display and for the voice satellites C6 and S3 (leave brightness empty there).
+    Works for the 7" wall display and the voice satellites C6 and S3. Leave brightness empty for all
+    of them (the 7" has no brightness setting any more: its backlight is on/off only) and use the
+    night mode; the brightness inputs are only for displays that offer a number entity for it.
     Runs at sunrise/sunset, at the night start/end times, on HA start and when the
     device reports esphome.display_ready.
   domain: automation
@@ -13,8 +15,8 @@ blueprint:
     brightness_entity:
       name: Brightness (number entity of the display, optional)
       description: >
-        Leave empty for a voice satellite (C6, S3; their brightness is set on the light entity):
-        then only the night mode switch is set.
+        Leave empty for the 7" wall display and the voice satellites (C6, S3; their brightness is
+        set on the light entity): then only the night mode switch is set.
       default: ""
       selector:
         entity:
