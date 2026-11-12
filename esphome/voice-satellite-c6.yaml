@@ -1057,7 +1057,7 @@ script:
             id(cur_tile_id) = nth(id(tile_ids), k);
             id(cur_tile_tap) = nth(id(tile_taps), k);
             if (id(cur_tile_tap).empty()) id(cur_tile_tap) = "none";
-            char buf[16];
+            char buf[32];
             snprintf(buf, sizeof(buf), "< %d / %d >", k + 1, id(tile_count));
             id(tile_counter_text) = buf;
           } else if (id(answer_active)) {
@@ -1861,237 +1861,284 @@ voice_assistant:
 # Icons (Material Design Icons, Namen wie in Schnittstelle 1.2)
 # ----------------------------------------------------------------------------
 image:
-  - file: mdi:check
+  - platform: file
+    file: mdi:check
     id: img_check
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:close
+  - platform: file
+    file: mdi:close
     id: img_close
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:alert
+  - platform: file
+    file: mdi:alert
     id: img_alert
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:information
+  - platform: file
+    file: mdi:information
     id: img_information
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:help
+  - platform: file
+    file: mdi:help
     id: img_help
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:trash-can
+  - platform: file
+    file: mdi:trash-can
     id: img_trash_can
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:train
+  - platform: file
+    file: mdi:train
     id: img_train
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:washing-machine
+  - platform: file
+    file: mdi:washing-machine
     id: img_washing_machine
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:thermometer
+  - platform: file
+    file: mdi:thermometer
     id: img_thermometer
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:water-alert
+  - platform: file
+    file: mdi:water-alert
     id: img_water_alert
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:battery-alert
+  - platform: file
+    file: mdi:battery-alert
     id: img_battery_alert
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:power-plug
+  - platform: file
+    file: mdi:power-plug
     id: img_power_plug
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:pool
+  - platform: file
+    file: mdi:pool
     id: img_pool
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:door-open
+  - platform: file
+    file: mdi:door-open
     id: img_door_open
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:molecule-co2
+  - platform: file
+    file: mdi:molecule-co2
     id: img_molecule_co2
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:solar-power
+  - platform: file
+    file: mdi:solar-power
     id: img_solar_power
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:printer
+  - platform: file
+    file: mdi:printer
     id: img_printer
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:cart
+  - platform: file
+    file: mdi:cart
     id: img_cart
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:wifi
+  - platform: file
+    file: mdi:wifi
     id: img_wifi
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:bicycle-electric
+  - platform: file
+    file: mdi:bicycle-electric
     id: img_bicycle_electric
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:pump
+  - platform: file
+    file: mdi:pump
     id: img_pump
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:calendar
+  - platform: file
+    file: mdi:calendar
     id: img_calendar
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:lightbulb
+  - platform: file
+    file: mdi:lightbulb
     id: img_lightbulb
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:fire
+  - platform: file
+    file: mdi:fire
     id: img_fire
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:weather-sunny
+  - platform: file
+    file: mdi:weather-sunny
     id: img_weather_sunny
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:weather-night
+  - platform: file
+    file: mdi:weather-night
     id: img_weather_night
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:weather-partly-cloudy
+  - platform: file
+    file: mdi:weather-partly-cloudy
     id: img_weather_partly_cloudy
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:weather-cloudy
+  - platform: file
+    file: mdi:weather-cloudy
     id: img_weather_cloudy
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:weather-rainy
+  - platform: file
+    file: mdi:weather-rainy
     id: img_weather_rainy
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:weather-pouring
+  - platform: file
+    file: mdi:weather-pouring
     id: img_weather_pouring
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:weather-snowy
+  - platform: file
+    file: mdi:weather-snowy
     id: img_weather_snowy
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:weather-snowy-rainy
+  - platform: file
+    file: mdi:weather-snowy-rainy
     id: img_weather_snowy_rainy
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:weather-fog
+  - platform: file
+    file: mdi:weather-fog
     id: img_weather_fog
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:weather-hail
+  - platform: file
+    file: mdi:weather-hail
     id: img_weather_hail
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:weather-lightning
+  - platform: file
+    file: mdi:weather-lightning
     id: img_weather_lightning
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:weather-lightning-rainy
+  - platform: file
+    file: mdi:weather-lightning-rainy
     id: img_weather_lightning_rainy
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:weather-windy
+  - platform: file
+    file: mdi:weather-windy
     id: img_weather_windy
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:alarm
+  - platform: file
+    file: mdi:alarm
     id: img_alarm
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:alarm-off
+  - platform: file
+    file: mdi:alarm-off
     id: img_alarm_off
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:clock-outline
+  - platform: file
+    file: mdi:clock-outline
     id: img_clock_outline
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:timer-outline
+  - platform: file
+    file: mdi:timer-outline
     id: img_timer_outline
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:fan
+  - platform: file
+    file: mdi:fan
     id: img_fan
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:window-shutter
+  - platform: file
+    file: mdi:window-shutter
     id: img_window_shutter
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:window-shutter-open
+  - platform: file
+    file: mdi:window-shutter-open
     id: img_window_shutter_open
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:phone-missed
+  - platform: file
+    file: mdi:phone-missed
     id: img_phone_missed
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:printer-3d
+  - platform: file
+    file: mdi:printer-3d
     id: img_printer_3d
     resize: 40x40
     type: RGB565
     transparency: alpha_channel
-  - file: mdi:printer-3d-nozzle-alert
+  - platform: file
+    file: mdi:printer-3d-nozzle-alert
     id: img_printer_3d_nozzle_alert
     resize: 40x40
     type: RGB565
