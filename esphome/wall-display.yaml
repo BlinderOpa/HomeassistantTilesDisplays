@@ -60,8 +60,11 @@ http_request:
 
 # Hintergrundbild: HA wählt und bereitet es auf (800x480, abgedunkelt, Baseline-JPEG)
 # und schickt nur die URL (Aktion set_background). Das Gerät zeigt es unverändert an.
-online_image:
-  - id: bg_image
+# Seit ESPHome 2026.10 ist online_image eine Plattform von image: (das alte Top-Level
+# "online_image:" fällt mit 2027.1 weg).
+image:
+  - platform: online_image
+    id: bg_image
     url: "http://127.0.0.1/none.jpg"   # Platzhalter, die echte URL kommt per set_background
     format: JPEG
     type: RGB565
