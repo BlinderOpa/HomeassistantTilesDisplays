@@ -35,6 +35,13 @@
 #     wird (Zeit von Home Assistant).
 #   - Display-Treiber mipi_spi mit dem tatsächlichen Controller GC9107 (statt des
 #     veralteten st7735). Farben/Versatz bei Bedarf per substitutions anpassen.
+#   - Status-LEDs (Ring aus 8 LEDs) als Animation:
+#       Zuhören    = blauer Ring läuft ab (geschätzte Restzeit, siehe led_zuhoeren_s)
+#       Verarbeiten = blauer Punkt kreist
+#       Erfolg     = grün nacheinander einmal im Kreis, dann aus
+#       Fehler     = rot blinken, dann aus
+#       Update     = orange
+#     Am Ende jeder Sitzung werden die LEDs sicher ausgeschaltet.
 #   - Flash 8 MB (so ist das Board bestückt) statt ESPHome-Standard 4 MB.
 #     ACHTUNG: Die Umstellung ändert die Partitionstabelle und muss EINMAL per
 #     USB geflasht werden; danach geht OTA wieder. Gespeicherte Einstellungen
@@ -73,6 +80,16 @@ substitutions:
   # 180° gedreht wie beim alten st7735-Treiber (der spiegelte beide Achsen)
   display_mirror_x: "true"
   display_mirror_y: "true"
+  # Status-LEDs
+  #   led_zuhoeren_s: so lange läuft der blaue Ring beim Zuhören ab. ESPHome kennt
+  #     die echte Restzeit nicht (das Ende bestimmt Home Assistant per Sprechpause);
+  #     endet das Zuhören früher, wechselt der Ring sofort auf "Verarbeiten".
+  #   led_start / led_rueckwaerts: welche LED oben ist und in welche Richtung es läuft
+  led_helligkeit: "60%"
+  led_zuhoeren_s: "8"
+  led_schritt_ms: "90"
+  led_start: "0"
+  led_rueckwaerts: "false"
 
 esphome:
   name: ${node_name}
@@ -131,13 +148,9 @@ ota:
       - script.execute:
           id: question_finish
           antwort: "cancelled"
-      - light.turn_on:
-          id: status_leds
-          red: 100%
-          green: 60%
-          blue: 0%
-          brightness: 40%
-          transition_length: 0s
+      - script.execute:
+          id: led_set
+          modus: 5
       - lvgl.widget.refresh: status_label
     on_progress:
       # nur in 5-%-Schritten neu zeichnen
@@ -257,6 +270,16 @@ logger:
     voice_assistant: DEBUG
 
 globals:
+  # Status-LEDs: 0 aus, 1 Zuhören, 2 Verarbeiten, 3 Erfolg, 4 Fehler, 5 Update
+  - id: led_mode
+    type: int
+    restore_value: false
+    initial_value: '0'
+  - id: led_t0
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+
   - id: status_text
     type: std::string
     restore_value: false
@@ -480,6 +503,60 @@ light:
     id: status_leds
     restore_mode: ALWAYS_OFF
     default_transition_length: 0s
+    effects:
+      # Wird von den Skripten led_set / led_success / led_error benutzt
+      - addressable_lambda:
+          name: "Status"
+          update_interval: 30ms
+          lambda: |-
+            const int n = it.size();
+            const uint32_t t = millis() - id(led_t0);
+            // Position im Kreis -> LED-Index (Start-LED und Richtung einstellbar)
+            auto led = [&](int pos) -> int {
+              pos = ((pos % n) + n) % n;
+              int i = ${led_rueckwaerts} ? (n - pos) % n : pos;
+              return (i + ${led_start}) % n;
+            };
+            it.all() = Color::BLACK;
+            switch (id(led_mode)) {
+              case 1: {  // Zuhören: blauer Ring läuft ab
+                float rest = 1.0f - (float) t / (${led_zuhoeren_s} * 1000.0f);
+                if (rest > 0.0f) {
+                  float an = rest * n;
+                  for (int p = 0; p < n; p++) {
+                    float f = an - p;
+                    if (f > 1.0f) f = 1.0f;
+                    if (f <= 0.0f) break;
+                    it[led(p)] = Color(0, 0, (uint8_t) (255 * f));
+                  }
+                } else {
+                  // länger als erwartet: erste LED pulsiert, es wird weiter zugehört
+                  uint8_t b = 40 + (uint8_t) (100 * (0.5f + 0.5f * sinf(t / 250.0f)));
+                  it[led(0)] = Color(0, 0, b);
+                }
+                break;
+              }
+              case 2: {  // Verarbeiten: ein Punkt mit Schweif kreist
+                int p = t / ${led_schritt_ms};
+                it[led(p)] = Color(0, 0, 255);
+                it[led(p - 1)] = Color(0, 0, 70);
+                it[led(p - 2)] = Color(0, 0, 15);
+                break;
+              }
+              case 3: {  // Erfolg: grün nacheinander, einmal im Kreis
+                int k = t / ${led_schritt_ms};
+                for (int p = 0; p < n && p <= k; p++) it[led(p)] = Color(0, 255, 0);
+                break;
+              }
+              case 4:    // Fehler: rot blinken
+                if ((t / 250) % 2 == 0) it.all() = Color(255, 0, 0);
+                break;
+              case 5:    // Update: orange
+                it.all() = Color(255, 150, 0);
+                break;
+              default:
+                break;
+            }
 
   # In Home Assistant: light.voice_satellite_s3_display_helligkeit
   - platform: monochromatic
@@ -674,34 +751,54 @@ script:
                       id: display_backlight
                       transition_length: 400ms
 
-  # Erfolg: kurz grün, dann aus
-  - id: led_success
+  # Status-LEDs: Animation umschalten (siehe Effekt "Status")
+  - id: led_set
     mode: restart
+    parameters:
+      modus: int
     then:
+      - lambda: |-
+          id(led_mode) = modus;
+          id(led_t0) = millis();
       - light.turn_on:
           id: status_leds
-          red: 0%
-          green: 100%
-          blue: 0%
-          brightness: 100%
+          brightness: ${led_helligkeit}
+          effect: "Status"
           transition_length: 0s
-      - delay: 1.5s
+
+  # Status-LEDs aus (Effekt beenden, damit nichts stehen bleibt)
+  - id: led_off
+    mode: restart
+    then:
+      - script.stop: led_success
+      - script.stop: led_error
+      - lambda: 'id(led_mode) = 0;'
       - light.turn_off:
           id: status_leds
           transition_length: 0s
 
-  # Fehler: kurz rot, dann aus
+  # Erfolg: grün nacheinander einmal im Kreis, kurz halten, dann aus
+  - id: led_success
+    mode: restart
+    then:
+      - script.execute:
+          id: led_set
+          modus: 3
+      - delay: !lambda 'return 8 * ${led_schritt_ms} + 400;'
+      - lambda: 'id(led_mode) = 0;'
+      - light.turn_off:
+          id: status_leds
+          transition_length: 0s
+
+  # Fehler: rot blinken, dann aus
   - id: led_error
     mode: restart
     then:
-      - light.turn_on:
-          id: status_leds
-          red: 100%
-          green: 0%
-          blue: 0%
-          brightness: 100%
-          transition_length: 0s
-      - delay: 1.5s
+      - script.execute:
+          id: led_set
+          modus: 4
+      - delay: 1500ms
+      - lambda: 'id(led_mode) = 0;'
       - light.turn_off:
           id: status_leds
           transition_length: 0s
@@ -910,7 +1007,7 @@ voice_assistant:
   speaker: onboard_speaker
   on_start:
     - micro_wake_word.stop:
-  # Blau: nur während der Aufnahme
+  # LEDs: Ring läuft ab beim Zuhören, Punkt kreist beim Verarbeiten
   on_listening:
     - lambda: 'id(voice_assistant_busy) = true;'
     - script.execute: display_wake
@@ -919,21 +1016,18 @@ voice_assistant:
     - script.stop: auto_clear
     - lambda: 'id(tts_text) = "";'
     - lvgl.widget.refresh: response_label
-    - light.turn_on:
-        id: status_leds
-        red: 0%
-        green: 0%
-        blue: 100%
-        brightness: 100%
-        transition_length: 0s
+    # Blauer Ring läuft ab
+    - script.execute:
+        id: led_set
+        modus: 1
     - lambda: 'id(status_text) = "Höre zu...";'
     - lvgl.widget.refresh: status_label
-  # Aufnahme beendet: blau aus
+  # Aufnahme beendet: blauer Punkt kreist, bis die Antwort kommt
   on_stt_vad_end:
-    - light.turn_off:
-        id: status_leds
-        transition_length: 0s
-  # Erfolg: kurz grün, gesprochenen Satz anzeigen
+    - script.execute:
+        id: led_set
+        modus: 2
+  # Erfolg: grün einmal im Kreis, gesprochenen Satz anzeigen
   on_tts_start:
     - script.execute: display_wake
     - script.execute: led_success
@@ -948,6 +1042,16 @@ voice_assistant:
     - lambda: |-
         id(voice_assistant_busy) = false;
         id(status_text) = "Bereit";
+    # Sicherheitsnetz: LEDs aus, falls keine Erfolg-/Fehler-Animation mehr läuft
+    - if:
+        condition:
+          and:
+            - not:
+                script.is_running: led_success
+            - not:
+                script.is_running: led_error
+        then:
+          - script.execute: led_off
     - lvgl.widget.refresh: status_label
     - script.execute: auto_clear
     # Während der Sprachausgabe empfangene Antwort jetzt anzeigen
@@ -964,7 +1068,7 @@ voice_assistant:
           lambda: 'return !id(ota_running);'
         then:
           - micro_wake_word.start:
-  # Fehler: kurz rot, dann aus
+  # Fehler: rot blinken, dann aus
   on_error:
     - lambda: 'id(voice_assistant_busy) = false;'
     - script.execute: display_wake

@@ -284,6 +284,22 @@ automation:
         mode_select: select.ventilation_mode
         boost_script: script.ventilation_boost      # same as the humidity tile
         normal_option: "home"                         # an option of your mode select
+  - id: voice_sockets
+    alias: "Voice: switch selected sockets"
+    use_blueprint:
+      path: wall_tiles/voice_sockets.yaml
+      input:
+        sockets:                       # only these can be switched by voice
+          - switch.tv_plug             # HA name "Fernseher"
+          - switch.pool_pump_plug      # HA name "Steckdose Poolpumpe" → also "Poolpumpe"
+          - switch.garden_plugs        # HA name "Gartensteckdosen"
+        sentences_switch:              # the spoken names (HA names)
+          - "Schalte [den | die | das] (Fernseher | Poolpumpe | Gartensteckdosen) (an | ein | aus)"
+          - "Mach[e] [den | die | das] (Fernseher | Poolpumpe | Gartensteckdosen) (an | aus)"
+          - "[Den | Die | Das] (Fernseher | Poolpumpe | Gartensteckdosen) (an | aus | einschalten | ausschalten)"
+        sentences_state:
+          - "Ist [der | die | das] (Fernseher | Poolpumpe | Gartensteckdosen) (an | aus)"
+          - "Läuft [der | die | das] (Fernseher | Poolpumpe | Gartensteckdosen)"
   - id: voice_shutters_group
     alias: "Voice: lower shutters up/down"
     use_blueprint:
@@ -508,6 +524,17 @@ template:
         switch_entity: switch.charger_plug
         avg_power_entity: sensor.charger_power_avg   # Statistics helper (UI)
         drawer_entity: binary_sensor.charger_drawer
+  - name: "Tile Cistern Pump"   # off because of frost, but it is warm again
+    unique_id: tile_cistern_pump
+    use_blueprint:
+      path: wall_tiles/tile_frost_switch.yaml
+      input:
+        switch_entity: switch.cistern_pump_plug
+        temperature_entity: sensor.outdoor_temperature
+        frost_temperature: 4
+        title: "Zisterne"
+        prio: 39
+        icon: mdi:water-pump
   - name: "Tile Workplace"
     unique_id: tile_workplace
     use_blueprint:

@@ -45,6 +45,7 @@ blueprint files; your own file stays untouched.
 blueprints/
   template/wall_tiles/        TILES (one entity per blueprint instance, YAML only)
     tile_socket               smart plug: on/off + power, tap toggles
+    tile_frost_switch         switch turned off for frost, but it is warm again – tap switches on
     tile_binary_alarm         visible while a binary sensor is on (leak, door …)
     tile_device_fault         fault (red) / warning (orange) of a device + error texts
     tile_appliance            running appliance: time left + progress bar
@@ -84,6 +85,7 @@ blueprints/
     voice_time_date           "Wie spät ist es?" · "Welcher Tag ist heute?"
     voice_timer               "Timer zehn Minuten" · "Wie lange noch?" · "Timer aus" (needs a timer + text helper)
     voice_ventilation         "Lüftung aus / an / hoch / normal" · "Läuft die Lüftung?"
+    voice_sockets             "Schalte den Fernseher aus" · "Ist die Poolpumpe an?" (only the sockets you select)
     voice_appliance · voice_charging_plug · voice_3d_printer · voice_waste
     voice_train · voice_weather · voice_energy
     wake_light                sunrise light alarm, follows alarm_next (workdays + special alarm)

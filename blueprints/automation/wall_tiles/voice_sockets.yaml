@@ -1,0 +1,143 @@
+blueprint:
+  name: "Wall tiles voice: switch selected sockets"
+  description: >
+    "Fernseher aus" · "Schalte die Poolpumpe ein" · "Ist die Poolpumpe an?" – switches only
+    the sockets/switches you select here. Sockets that only measure, or other sockets in the
+    same room, are never touched (no room-wide switching).
+
+    **Names**: a socket is recognised by its Home Assistant name (case, "-" and a leading
+    "Steckdose" are ignored: "Steckdose Poolpumpe" also answers to "Poolpumpe"). Easiest:
+    rename the entity to what you say ("Fernseher"); HA aliases still work for HA's own
+    sentences ("Schalte … an"), but a blueprint cannot read aliases – for a different spoken
+    name use "Extra names".
+
+    **Sentences**: Speech-to-Phrase only understands fixed sentences, so the spoken names must
+    appear in the sentences as a list `(Fernseher | Poolpumpe | …)`. On or off is taken from
+    the words (an / ein / einschalten / aus / ausschalten). Do not reuse names that other voice
+    blueprints already use (e.g. "Lüftung"). Restart Speech-to-Phrase after changing sentences.
+
+    Tip: sockets that must never be switched by voice should also not be exposed to Assist,
+    otherwise HA's own "Schalte … aus" still reaches them.
+  domain: automation
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/automation/wall_tiles/voice_sockets.yaml
+  input:
+    sockets:
+      name: Switchable sockets
+      description: Only these can be switched by voice.
+      selector: {entity: {domain: [switch, input_boolean, light, fan], multiple: true}}
+    extra_names:
+      name: Extra names (optional)
+      description: "Spoken name → entity, only if it differs from the HA name, e.g. `Fernseher: switch.plug_5_tv`. The entity must also be selected above."
+      default: {}
+      selector: {object: {}}
+    sentences_switch:
+      name: Sentences – switch on / off
+      description: Replace the example names with yours (the same list in every sentence).
+      default:
+        - "Schalte [den | die | das] (Fernseher | Kaffeemaschine) (an | ein | aus)"
+        - "Mach[e] [den | die | das] (Fernseher | Kaffeemaschine) (an | aus)"
+        - "[Den | Die | Das] (Fernseher | Kaffeemaschine) (an | aus | einschalten | ausschalten)"
+      selector: {text: {multiple: true}}
+    sentences_state:
+      name: Sentences – is it on?
+      default:
+        - "Ist [der | die | das] (Fernseher | Kaffeemaschine) (an | aus)"
+        - "Läuft [der | die | das] (Fernseher | Kaffeemaschine)"
+      selector: {text: {multiple: true}}
+
+mode: parallel
+
+triggers:
+  - trigger: conversation
+    id: switch
+    command: !input sentences_switch
+  - trigger: conversation
+    id: state
+    command: !input sentences_state
+
+variables:
+  allowed: !input sockets
+  extra: !input extra_names
+  sentence: >
+    {{ ' ' ~ (trigger.sentence | lower | replace('-', ' ') | replace('?', '') | replace('.', '')
+              | replace(',', '')) ~ ' ' }}
+  # spoken name (normalised) → entity: HA name, HA name without "Steckdose", extra names
+  names: >
+    {% set ns = namespace(d={}) %}
+    {% for e in allowed %}
+      {% set n = (state_attr(e, 'friendly_name') or '') | lower | replace('-', ' ') | trim %}
+      {% if n %}
+        {% set ns.d = dict(ns.d, **{n: e}) %}
+        {% if n.startswith('steckdose ') %}{% set ns.d = dict(ns.d, **{n[10:] | trim: e}) %}{% endif %}
+      {% endif %}
+    {% endfor %}
+    {% for k, v in (extra or {}).items() if v in allowed %}
+      {% set ns.d = dict(ns.d, **{k | lower | replace('-', ' ') | trim: v}) %}
+    {% endfor %}
+    {{ ns.d }}
+  # longest matching name wins ("Garten" vs. "Garten Steckdosen")
+  key: >
+    {% set ns = namespace(k='') %}
+    {% for k in names.keys() if (' ' ~ k ~ ' ') in sentence and (k | length) > (ns.k | length) %}
+      {% set ns.k = k %}
+    {% endfor %}
+    {{ ns.k }}
+  ents: "{{ [names[key]] if key else [] }}"
+  # how the device is called in the answer: the spoken words, capitalised
+  label: "{{ key.split(' ') | map('capitalize') | join(' ') if key else '' }}"
+  words: "{{ sentence.split() }}"
+  want_on: >
+    {{ not (words | select('in', ['aus', 'ausschalten', 'ab', 'abschalten']) | list | count > 0) }}
+  reachable: "{{ ents | reject('is_state', ['unknown', 'unavailable']) | list }}"
+
+actions:
+  - if: "{{ ents | count == 0 }}"
+    then:
+      - set_conversation_response: "Dieses Gerät ist nicht zum Schalten freigegeben."
+      - stop: "unknown name"
+  - if: "{{ reachable | count == 0 }}"
+    then:
+      - action: script.display_answer
+        continue_on_error: true
+        data:
+          target: "{{ trigger.device_id }}"
+          title: "{{ label[:16] }}"
+          value: "nicht erreichbar"
+          status: warn
+          icon: alert
+      - set_conversation_response: "{{ label }} ist gerade nicht erreichbar."
+      - stop: "not reachable"
+
+  - if: "{{ trigger.id == 'switch' }}"
+    then:
+      - action: "{{ 'homeassistant.turn_on' if want_on else 'homeassistant.turn_off' }}"
+        target:
+          entity_id: "{{ reachable }}"
+      - delay: 2
+
+  - variables:
+      on_now: "{{ reachable | select('is_state', 'on') | list | count > 0 }}"
+      # power of the first socket, if its device has a power sensor
+      watt: >
+        {% set ns = namespace(w=none) %}
+        {% for e in reachable if ns.w is none %}
+          {% set d = device_id(e) %}
+          {% set p = (device_entities(d) if d else []) | select('match', '^sensor\.')
+                     | select('is_state_attr', 'device_class', 'power') | list %}
+          {% if p and states(p[0]) | is_number %}{% set ns.w = states(p[0]) | float | round(0) | int %}{% endif %}
+        {% endfor %}
+        {{ ns.w }}
+  - action: script.display_answer
+    continue_on_error: true
+    data:
+      target: "{{ trigger.device_id }}"
+      title: "{{ label[:16] }}"
+      value: "{{ ('an' ~ ((' · ' ~ watt ~ ' W') if watt is number else '')) if on_now else 'aus' }}"
+      status: "{{ 'on' if on_now else 'off' }}"
+      icon: power-plug
+      duration: 4
+  - set_conversation_response: >
+      {% if trigger.id == 'state' %}{{ label }} ist {{ 'an' if on_now else 'aus' }}{{ (', ' ~ watt ~ ' Watt') if on_now and watt is number else '' }}.
+      {% elif want_on and not on_now %}{{ label }} lässt sich gerade nicht einschalten.
+      {% elif not want_on and on_now %}{{ label }} lässt sich gerade nicht ausschalten.
+      {% else %}{{ label }} ist {{ 'an' if on_now else 'aus' }}.{% endif %}

@@ -1,0 +1,92 @@
+blueprint:
+  name: "Wall tiles: frost protection switch"
+  description: >
+    Reminder tile for a switch that an automation turns off when it freezes
+    (cistern pump, garden water, outdoor fountain …).
+    Visible while the switch is OFF and the outdoor temperature is ABOVE the frost
+    protection temperature again – i.e. it could be switched back on.
+    Hysteresis: it appears at frost temperature + margin and disappears below the
+    frost temperature, so it does not flicker around the limit.
+    Tapping the tile switches it on.
+    Name the entity "Tile <something>" so it becomes sensor.tile_<something>,
+    and give it the label "Display" in the UI.
+  domain: template
+  source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/template/wall_tiles/tile_frost_switch.yaml
+  input:
+    switch_entity:
+      name: Switch
+      description: The plug / switch your frost automation turns off.
+      selector:
+        entity:
+          domain: switch
+    temperature_entity:
+      name: Outdoor temperature
+      description: Use the same sensor as your frost automation.
+      selector:
+        entity:
+          domain: sensor
+          device_class: temperature
+    frost_temperature:
+      name: Frost protection temperature
+      description: Below this temperature the switch stays off (same value as in your frost automation).
+      default: 4
+      selector:
+        number:
+          min: -10
+          max: 15
+          step: 0.5
+          unit_of_measurement: "°C"
+    margin:
+      name: Margin
+      description: The tile appears only at frost temperature + margin (0 = right at the limit).
+      default: 1
+      selector:
+        number:
+          min: 0
+          max: 5
+          step: 0.5
+          unit_of_measurement: K
+    title:
+      name: Title on the tile
+      default: "Pumpe"
+      selector:
+        text:
+    prio:
+      name: Priority (smaller = further up)
+      default: 39
+      selector:
+        number:
+          min: 0
+          max: 99
+    icon:
+      name: Icon
+      default: "mdi:water-pump"
+      selector:
+        icon:
+
+variables:
+  sw: !input switch_entity
+  temp: !input temperature_entity
+  frost: !input frost_temperature
+  margin_: !input margin
+  title_: !input title
+  prio_: !input prio
+  icon_: !input icon
+
+sensor:
+  icon: "{{ icon_ }}"
+  state: >
+    {% set t = states(temp) | float(none) %}
+    {% set was_on = this.state is defined and this.state not in ['hidden', 'unknown', 'unavailable'] %}
+    {% set limit = frost | float + (0 if was_on else margin_ | float) %}
+    {% if is_state(sw, 'off') and t is not none and t >= limit %}info{% else %}hidden{% endif %}
+  attributes:
+    prio: "{{ prio_ | int }}"
+    title: "{{ title_ }}"
+    value: >
+      {% set t = states(temp) | float(none) %}
+      aus · {{ ('%.1f' | format(t)) | replace('.', ',') ~ ' °C' if t is not none else '? °C' }}
+    detail: "Kein Frost – antippen schaltet ein"
+    progress: -1
+    tap: "toggle"
+    entity: "{{ sw }}"
