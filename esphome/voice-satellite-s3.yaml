@@ -763,8 +763,9 @@ script:
       - light.turn_on:
           id: status_leds
           brightness: ${led_helligkeit}
+          # kein transition_length: ESPHome erlaubt Effekt und Übergang nicht zusammen
+          # (Standardübergang der Status-LEDs ist ohnehin 0 s)
           effect: "Status"
-          transition_length: 0s
 
   # Status-LEDs aus (Effekt beenden, damit nichts stehen bleibt)
   - id: led_off
