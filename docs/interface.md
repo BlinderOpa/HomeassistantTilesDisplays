@@ -89,6 +89,10 @@ homeassistant.event:
 
 A tile is **one template sensor** whose entity id starts with `sensor.tile_` and that has the
 **label `Display`** (labels can only be set in the UI, so a `unique_id` is required).
+Which display shows it is also decided by labels: `Display` = **all** displays,
+`Display <device>` = only that device (e.g. `Display my-wall-display`; several such labels =
+several devices; case, `_`, `-` and spaces don't matter). A tile with only `Display <device>`
+labels is not shown elsewhere.
 The tile `id` is the part after `sensor.tile_`. HA turns umlauts into a/o/u in entity ids.
 
 - **state** = status from 1.1 or `hidden`
@@ -111,8 +115,14 @@ Round fast-changing values (power) so not every small change triggers a new send
 
 ### 4.2 Action `set_tiles`
 
-`sensor.wall_tiles` (package `tiles_collector.yaml`) builds the sorted list (max. 12) in its
-attribute `tiles`; the blueprint `tiles_push.yaml` sends it as JSON on every change.
+`sensor.wall_tiles` (package `tiles_collector.yaml`) builds the sorted list (max. 24, each tile
+with a field `displays`) in its attribute `tiles`; the blueprint `tiles_push.yaml` picks the tiles
+of its device (labels `Display` / `Display <device>`; optional input `display_name` if the label
+text differs from the node name), cuts to `max_tiles` and sends the JSON on every change. The
+field `displays` is not sent to the device.
+
+**C6:** tile no. 1 is always a local clock (weekday, time, date). It is not in the list from HA,
+so the C6 shows the clock plus up to 12 tiles.
 
 ```yaml
 api:
@@ -305,6 +315,7 @@ New fields only as optional fields with a default (old devices ignore unknown JS
 New icons go into 1.2 first, then into the devices. Incompatible changes bump the major version.
 
 ### Changelog
+- v1.17: tiles per display by labels (4.1): `Display` = all displays, `Display <device>` = only that device; `tiles_collector.yaml` delivers up to 24 tiles with the field `displays`, `tiles_push.yaml` filters per device (new optional input `display_name`). C6: tile 1 is a local clock (time and date) and the "no tiles" text is gone. Old setups (only the label `Display`) work unchanged; the C6 firmware changes.
 - v1.16: sensor `Display-Info` (4.10) on all three devices; `display_answer` finds the devices by it (the `devices` list is optional now) and knows the targets `satellites` and `voice` and node names. All three firmwares change.
 - v1.15: 7" without brightness: number `Display Helligkeit` and the dimming overlay removed (the backlight is on/off only; use the night mode, 4.8). Display `update_interval: never` (LVGL redraws itself), `min_version` 2026.9.0. HA: identify the 7" in `display_answer` by another entity (e.g. `number.<node>_display_wachzeit`); `display_brightness` without `brightness_entity`. Only the 7" firmware changes.
 - v1.14: icons `clock-outline`, `timer-outline`, `fan` (voice blueprints time/date, timer, ventilation) on all devices; S3 and C6 also get `window-shutter`, `window-shutter-open`, `phone-missed`, `printer-3d`, `printer-3d-nozzle-alert` (voice answers); the 7" also gets `alarm`, `alarm-off`, `battery-charging`, `progress-clock`, `school` (tile icons). Firmware of all three devices changes (new glyphs only).

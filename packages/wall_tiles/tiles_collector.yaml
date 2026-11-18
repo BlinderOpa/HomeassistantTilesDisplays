@@ -1,13 +1,18 @@
 # Tile collector
-#   Collects every tile (entity id starts with sensor.tile_ AND has the label "Display"),
-#   drops hidden ones, sorts by prio and exposes the first 12 in the attribute "tiles".
-#   Sending to the devices is done by the blueprint "Wall tiles: push tiles to an ESPHome device"
-#   (one automation per device).
+#   Collects every tile (entity id starts with sensor.tile_) that has a label "Display" or
+#   "Display <device>", drops hidden ones, sorts by prio and exposes up to 24 in the attribute
+#   "tiles" (each with a field "displays" saying where it may be shown).
+#     label "Display"            -> tile on ALL displays
+#     label "Display <device>"   -> tile only on that device, e.g. "Display my-wall-display"
+#                                   (several labels = several devices; upper/lower case, "_",
+#                                   "-" and spaces don't matter: "Display my_voice_c6" = "my-voice-c6")
+#   Sending to the devices (and cutting to the max. number of tiles of the device) is done by the
+#   blueprint "Wall tiles: push tiles to an ESPHome display" (one automation per device).
 #
 # DEBUG: switch on input_boolean.wall_tiles_debug →
-#   all sensor.tile_* are sent, also hidden ones and ones without the label.
-#   Hidden tiles are sent grey (status "off"); detail starts with "[aus]" / "[ohne Label]".
-#   Debug switches itself off after 15 minutes.
+#   all sensor.tile_* are sent, also hidden ones, ones without a label and ones meant for other
+#   devices. Hidden tiles are sent grey (status "off"); detail starts with "[aus]" / "[ohne Label]"
+#   / "[anderes Display]". Debug switches itself off after 15 minutes.
 #
 # Nothing to adapt here.
 input_boolean:
@@ -22,30 +27,32 @@ template:
         icon: mdi:view-grid
         state: >
           {% set _minute = now().minute %}
-          {% if is_state('input_boolean.wall_tiles_debug', 'on') %}
-            {{ [states.sensor | map(attribute='entity_id') | select('match', 'sensor.tile_') | list | count, 12] | min }}
-          {% else %}
-            {{ [label_entities('Display')
-                | select('match', 'sensor.tile_')
-                | map('states')
-                | reject('in', ['hidden', 'unknown', 'unavailable'])
-                | list | count, 12] | min }}
-          {% endif %}
+          {% set ns = namespace(c=0) %}
+          {% for e in states.sensor | map(attribute='entity_id') | select('match', 'sensor.tile_') %}
+            {% set lab = labels(e) | map('label_name') | map('lower') | list %}
+            {% set mit = 'display' in lab or (lab | select('match', '^display ') | list | count) > 0 %}
+            {% if is_state('input_boolean.wall_tiles_debug', 'on')
+                  or (mit and states(e) not in ['hidden', 'unknown', 'unavailable']) %}
+              {% set ns.c = ns.c + 1 %}
+            {% endif %}
+          {% endfor %}
+          {{ [ns.c, 24] | min }}
         attributes:
           tiles: >
             {% set _minute = now().minute %}
             {% set debug = is_state('input_boolean.wall_tiles_debug', 'on') %}
-            {% set labelled = label_entities('Display') | select('match', 'sensor.tile_') | list %}
-            {% set candidates = (states.sensor | map(attribute='entity_id')
-                                 | select('match', 'sensor.tile_') | list)
-                                if debug else labelled %}
             {% set ns = namespace(t=[]) %}
-            {% for e in candidates %}
+            {% for e in states.sensor | map(attribute='entity_id') | select('match', 'sensor.tile_') %}
+              {% set lab = labels(e) | map('label_name') | map('lower') | map('trim') | list %}
+              {% set where = lab | select('match', '^display ') | map('regex_replace', '^display\\s+', '')
+                                 | map('replace', '_', '-') | map('replace', ' ', '-') | list %}
+              {% set everywhere = 'display' in lab %}
+              {% set labelled = everywhere or where | count > 0 %}
               {% set s = states(e) %}
               {% set hidden = s in ['hidden', 'unknown', 'unavailable'] %}
-              {% if debug or not hidden %}
+              {% if (debug or labelled) and (debug or not hidden) %}
                 {% set a = states[e].attributes %}
-                {% set hint = ('[aus] ' if hidden else '') ~ ('[ohne Label] ' if e not in labelled else '') %}
+                {% set hint = ('[aus] ' if hidden else '') ~ ('[ohne Label] ' if not labelled else '') %}
                 {% set ns.t = ns.t + [{
                   'id':        e[12:],
                   'status':    'off' if hidden else s,
@@ -56,11 +63,13 @@ template:
                   'prio':      a.get('prio', 99) | int(99),
                   'tap':       a.get('tap') or 'none',
                   'progress':  a.get('progress', -1) | int(-1),
-                  'mini_icon': a.get('mini_icon') or 'auto'
+                  'mini_icon': a.get('mini_icon') or 'auto',
+                  'displays':  ['*'] if everywhere else where,
+                  'labelled':  labelled
                 }] %}
               {% endif %}
             {% endfor %}
-            {{ (ns.t | sort(attribute='prio'))[:12] }}
+            {{ (ns.t | sort(attribute='prio'))[:24] }}
 
 automation:
   - id: wall_tiles_debug_off

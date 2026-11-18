@@ -26,7 +26,7 @@
 #   - Nur der Knopf "Sprechen" oben oder die BOOT-Taste startet den Sprachassistenten
 #   - Solange der Assistent aktiv ist, steht oben der Knopf "Abbrechen"
 #   - "Warte auf Befehl..." erscheint nur bei aktivem Assistenten
-#   - Unten: im Ruhezustand die aktuelle Kachel, Wischen links/rechts blättert
+#   - Unten: im Ruhezustand die aktuelle Kachel (Kachel 1 = Uhrzeit und Datum, lokal), Wischen links/rechts blättert
 #   - Lautstärke per Schieberegler in Home Assistant
 # Pins gegen Pinout-Grafik und Schaltplan geprüft.
 # Nicht eingebunden: SD-Karte (SPI: MOSI=GPIO2, SCK=GPIO1, MISO=GPIO16,
@@ -1033,10 +1033,9 @@ script:
   - id: apply_response
     then:
       - lambda: |-
-          // Kachelansicht nur im Ruhezustand und wenn Kacheln vorhanden sind
+          // Kachelansicht im Ruhezustand; Kachel 1 ist immer die Uhr (lokal, nicht aus HA)
           id(tile_mode) = !id(answer_active) && !id(question_active) &&
-                          id(response_text).empty() && !id(assistant_active) &&
-                          id(tile_count) > 0;
+                          id(response_text).empty() && !id(assistant_active);
           if (id(tile_mode)) {
             auto nth = [](const std::string &s, int k) -> std::string {
               size_t a = 0;
@@ -1048,17 +1047,41 @@ script:
               size_t b = s.find('\x1f', a);
               return s.substr(a, b == std::string::npos ? std::string::npos : b - a);
             };
+            int n = id(tile_count) + 1;   // + Uhr
             int k = id(tile_idx);
-            if (k < 0 || k >= id(tile_count)) { k = 0; id(tile_idx) = 0; }
-            id(answer_title) = nth(id(tile_titles), k);
-            id(answer_value) = nth(id(tile_values), k);
-            id(answer_detail) = nth(id(tile_details), k);
-            id(border_status) = nth(id(tile_stati), k);
-            id(cur_tile_id) = nth(id(tile_ids), k);
-            id(cur_tile_tap) = nth(id(tile_taps), k);
-            if (id(cur_tile_tap).empty()) id(cur_tile_tap) = "none";
+            if (k < 0 || k >= n) { k = 0; id(tile_idx) = 0; }
+            if (k == 0) {
+              static const char *const wt[] = {"Sonntag", "Montag", "Dienstag", "Mittwoch",
+                                               "Donnerstag", "Freitag", "Samstag"};
+              auto t = id(ha_time).now();
+              if (t.is_valid()) {
+                char b1[8], b2[24];
+                snprintf(b1, sizeof(b1), "%02d:%02d", t.hour, t.minute);
+                snprintf(b2, sizeof(b2), "%d.%d.%d", t.day_of_month, t.month, t.year);
+                id(answer_title) = wt[(t.day_of_week - 1) % 7];
+                id(answer_value) = b1;
+                id(answer_detail) = b2;
+              } else {
+                id(answer_title) = "Uhrzeit";
+                id(answer_value) = "--:--";
+                id(answer_detail) = "";
+              }
+              id(border_status) = "none";
+              id(cur_tile_id) = "";
+              id(cur_tile_tap) = "none";
+            } else {
+              k--;
+              id(answer_title) = nth(id(tile_titles), k);
+              id(answer_value) = nth(id(tile_values), k);
+              id(answer_detail) = nth(id(tile_details), k);
+              id(border_status) = nth(id(tile_stati), k);
+              id(cur_tile_id) = nth(id(tile_ids), k);
+              id(cur_tile_tap) = nth(id(tile_taps), k);
+              if (id(cur_tile_tap).empty()) id(cur_tile_tap) = "none";
+              k++;
+            }
             char buf[32];
-            snprintf(buf, sizeof(buf), "< %d / %d >", k + 1, id(tile_count));
+            snprintf(buf, sizeof(buf), "< %d / %d >", k + 1, n);
             id(tile_counter_text) = buf;
           } else if (id(answer_active)) {
             id(border_status) = id(answer_status);
@@ -1090,7 +1113,7 @@ script:
             - lvgl.widget.hide: question_row
             - if:
                 condition:
-                  lambda: 'return id(tile_count) > 1;'
+                  lambda: 'return id(tile_count) > 0;'
                 then:
                   - lvgl.widget.show: tile_count_label
                 else:
@@ -1247,7 +1270,7 @@ script:
           id(tile_ids) = ki;
           id(tile_taps) = tp;
           id(tile_count) = count;
-          if (id(tile_idx) >= count) id(tile_idx) = 0;
+          if (id(tile_idx) > count) id(tile_idx) = 0;   // Index 0 = Uhr
       - if:
           condition:
             lambda: 'return id(tile_alarm_new);'
@@ -1263,10 +1286,10 @@ script:
     then:
       - if:
           condition:
-            lambda: 'return id(tile_mode) && !id(touch_woke) && id(tile_count) > 1 && (dx > 40 || dx < -40);'
+            lambda: 'return id(tile_mode) && !id(touch_woke) && id(tile_count) > 0 && (dx > 40 || dx < -40);'
           then:
             - lambda: |-
-                int n = id(tile_count);
+                int n = id(tile_count) + 1;
                 if (dx < 0) id(tile_idx) = (id(tile_idx) + 1) % n;
                 else id(tile_idx) = (id(tile_idx) + n - 1) % n;
             - script.execute: apply_response
@@ -1754,6 +1777,14 @@ script:
 # Sicherheitsnetz: gesprochener Satz verschwindet spätestens 20 s nachdem
 # Assistent und Sprachausgabe fertig sind, unabhängig von Ereignissen
 interval:
+  # Uhr-Kachel: Anzeige alle 5 s aktualisieren
+  - interval: 5s
+    then:
+      - if:
+          condition:
+            lambda: 'return id(tile_mode) && id(tile_idx) == 0;'
+          then:
+            - script.execute: apply_response
   - interval: 1s
     then:
       - if:

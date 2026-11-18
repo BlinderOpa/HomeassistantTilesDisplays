@@ -131,7 +131,9 @@ tools/ha_cleanup_check.jinja  paste into Developer tools → Template: missing, 
 3. Copy `examples/my_wall_tiles.yaml` to `config/packages/`, delete what you don't have and
    enter your entity ids. (Automations and scripts can also be created in the UI from the blueprints.)
 4. *Developer tools → YAML → reload all*.
-5. Give every `sensor.tile_*` the label **Display** (Settings → Entities → Labels).
+5. Give every `sensor.tile_*` the label **Display** (Settings → Entities → Labels) to show it on
+   all displays, or **Display <device>** (e.g. `Display my-wall-display`) to show it only there.
+   The device name is the node name of the push automation (or its input `display_name`).
    `input_boolean.wall_tiles_debug` shows all tiles, also hidden/unlabelled ones, for 15 min.
 
 ### ESPHome devices

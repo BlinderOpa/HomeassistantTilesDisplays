@@ -90,6 +90,8 @@ automation:
       path: wall_tiles/tiles_push.yaml
       input:
         node_name: my-wall-display
+        # Shows tiles labelled "Display" or "Display my-wall-display".
+        # display_name: only needed if the label text differs from the node name
   - id: wall_calendar_push        # only with package wall_calendar.yaml + firmware wall-display-calendar.yaml
     alias: "Wall display: send calendar"
     use_blueprint:
@@ -114,6 +116,7 @@ automation:
       input:
         node_name: my-voice-c6
         compact: true
+        # Shows tiles labelled "Display" or "Display my-voice-c6".
   - id: wall_display_night_mode
     alias: "Wall display: night mode"
     use_blueprint:

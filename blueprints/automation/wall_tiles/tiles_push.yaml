@@ -5,7 +5,8 @@ blueprint:
     device via its API action "set_tiles" – on every change, after the debug switch,
     on HA start and when the device reports "esphome.display_ready".
 
-    Create one automation per display.
+    Create one automation per display. Which tile appears on which display is decided by the
+    labels of the tile: "Display" = on every display, "Display <device>" = only on that device.
     "Compact" sends only id, tap, status, title, value, detail (saves RAM on small devices).
   domain: automation
   source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/automation/wall_tiles/tiles_push.yaml
@@ -15,6 +16,14 @@ blueprint:
       description: >
         As in the device YAML (esphome: name:), e.g. "wall-display".
         The action called is esphome.<node_name with - replaced by _>_set_tiles.
+      selector:
+        text:
+    display_name:
+      name: Name in the tile labels
+      description: >
+        The <device> part of the labels "Display <device>" (case, "_" and "-" don't matter).
+        Empty = the ESPHome node name.
+      default: ""
       selector:
         text:
     compact:
@@ -49,18 +58,29 @@ variables:
   node: !input node_name
   compact_: !input compact
   max_: !input max_tiles
+  dname_: !input display_name
+  me: "{{ ((dname_ | trim) if (dname_ | trim) != '' else node) | lower | replace('_', '-') | replace(' ', '-') }}"
+  debug: "{{ is_state('input_boolean.wall_tiles_debug', 'on') }}"
   service: "esphome.{{ node | replace('-', '_') }}_set_tiles"
   payload: >
     {% set ns = namespace(l=[]) %}
-    {% for k in (state_attr('sensor.wall_tiles', 'tiles') or [])[:max_ | int] %}
-      {% if compact_ %}
-        {% set ns.l = ns.l + [{'id': k.id, 'tap': k.tap, 'status': k.status,
-                               'title': k.title, 'value': k.value, 'detail': k.detail}] %}
-      {% else %}
-        {% set ns.l = ns.l + [k] %}
+    {% for k in (state_attr('sensor.wall_tiles', 'tiles') or []) %}
+      {% set mine = '*' in k.displays or me in k.displays %}
+      {% if mine or debug %}
+        {% set hint = '' if mine else '[anderes Display] ' %}
+        {% set detail = (hint ~ k.detail) | truncate(40, true, '') %}
+        {% if compact_ %}
+          {% set ns.l = ns.l + [{'id': k.id, 'tap': k.tap, 'status': k.status if mine else 'off',
+                                 'title': k.title, 'value': k.value, 'detail': detail}] %}
+        {% else %}
+          {% set ns.l = ns.l + [{'id': k.id, 'status': k.status if mine else 'off', 'icon': k.icon,
+                                 'title': k.title, 'value': k.value, 'detail': detail,
+                                 'prio': k.prio, 'tap': k.tap, 'progress': k.progress,
+                                 'mini_icon': k.mini_icon}] %}
+        {% endif %}
       {% endif %}
     {% endfor %}
-    {{ ns.l | to_json }}
+    {{ ns.l[:max_ | int] | to_json }}
 
 actions:
   - delay: 2   # collect a moment if several tiles change at once
