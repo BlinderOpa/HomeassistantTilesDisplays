@@ -45,6 +45,10 @@
 #   - Verstärker nur während einer Ausgabe an (sonst rauscht er leise): an bei
 #     Sprachantwort und Ansage/Wiedergabe über den Media-Player, danach wieder aus.
 #     Schalter "Verstärker automatisch" aus = Verstärker folgt nur "Verstärker Power".
+#   - Sprechtext mehrzeilig (Zeilenumbruch); passt er nicht ins Feld, scrollt er
+#     nach 2 s langsam nach unten (Skript text_layout).
+#   - Wächter (Skript va_watchdog): hängt der Assistent nach einem Befehl, wird er
+#     nach einer Wartezeit gestoppt und alles zurückgesetzt (LEDs, Status, Wake Word).
 #   - Flash 8 MB (so ist das Board bestückt) statt ESPHome-Standard 4 MB.
 #     ACHTUNG: Die Umstellung ändert die Partitionstabelle und muss EINMAL per
 #     USB geflasht werden; danach geht OTA wieder. Gespeicherte Einstellungen
@@ -78,8 +82,9 @@ substitutions:
   #   Bild steht auf dem Kopf                     -> display_mirror_x und _y umstellen
   display_invert: "true"
   display_color_order: "rgb"
-  display_offset_x: "0"
-  display_offset_y: "0"
+  # GC9107 128×128: sichtbarer Bereich beginnt bei Spalte 2 / Zeile 1 des Controllers
+  display_offset_x: "2"
+  display_offset_y: "1"
   # 180° gedreht wie beim alten st7735-Treiber (der spiegelte beide Achsen)
   display_mirror_x: "true"
   display_mirror_y: "true"
@@ -273,6 +278,12 @@ logger:
     voice_assistant: DEBUG
 
 globals:
+  # Sprechtext: wie weit das Antwortfeld höchstens gescrollt werden muss (px)
+  - id: text_scroll_max
+    type: int
+    restore_value: false
+    initial_value: '0'
+
   # Status-LEDs: 0 aus, 1 Zuhören, 2 Verarbeiten, 3 Erfolg, 4 Fehler, 5 Update
   - id: led_mode
     type: int
@@ -945,15 +956,141 @@ script:
                   - script.stop: question_timer
             - lvgl.widget.hide: question_layer
 
+  # Antwortfeld anordnen: kurzer Text mittig, langer Text oben beginnen und
+  # nach 2 s langsam nach unten scrollen (1 px alle 60 ms)
+  - id: text_layout
+    mode: restart
+    then:
+      - lambda: |-
+          // ESPHome liefert je nach Widget lv_obj_t* oder ein Objekt mit ->obj
+          auto obj_of = [](auto *w) -> lv_obj_t * {
+            if constexpr (std::is_same_v<std::remove_cv_t<std::remove_pointer_t<decltype(w)>>, lv_obj_t>) return w;
+            else return w->obj;
+          };
+          lv_obj_t *box = obj_of(id(response_box));
+          lv_obj_t *lbl = obj_of(id(response_label));
+          lv_obj_update_layout(box);
+          int frei = lv_obj_get_content_height(box);
+          int hoehe = lv_obj_has_flag(lbl, LV_OBJ_FLAG_HIDDEN) ? 0 : lv_obj_get_height(lbl);
+          bool lang = hoehe > frei;
+          lv_obj_set_flex_align(box, lang ? LV_FLEX_ALIGN_START : LV_FLEX_ALIGN_CENTER,
+                                LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+          lv_obj_update_layout(box);
+          lv_obj_scroll_to_y(box, 0, LV_ANIM_OFF);
+          id(text_scroll_max) = lang ? hoehe - frei : 0;
+      - if:
+          condition:
+            lambda: 'return id(text_scroll_max) > 0;'
+          then:
+            - delay: 2s
+            - while:
+                condition:
+                  lambda: |-
+                    // ESPHome liefert je nach Widget lv_obj_t* oder ein Objekt mit ->obj
+                    auto obj_of = [](auto *w) -> lv_obj_t * {
+                      if constexpr (std::is_same_v<std::remove_cv_t<std::remove_pointer_t<decltype(w)>>, lv_obj_t>) return w;
+                      else return w->obj;
+                    };
+                    return lv_obj_get_scroll_y(obj_of(id(response_box))) < id(text_scroll_max);
+                then:
+                  - lambda: |-
+                      // ESPHome liefert je nach Widget lv_obj_t* oder ein Objekt mit ->obj
+                      auto obj_of = [](auto *w) -> lv_obj_t * {
+                        if constexpr (std::is_same_v<std::remove_cv_t<std::remove_pointer_t<decltype(w)>>, lv_obj_t>) return w;
+                        else return w->obj;
+                      };
+                      lv_obj_t *box = obj_of(id(response_box));
+                      int vorher = lv_obj_get_scroll_y(box);
+                      lv_obj_scroll_by(box, 0, -1, LV_ANIM_OFF);
+                      // geht es nicht weiter (Ende erreicht), Schleife beenden
+                      if (lv_obj_get_scroll_y(box) == vorher) id(text_scroll_max) = 0;
+                  - delay: 60ms
+
+  # Sitzung beendet (normal über on_idle oder erzwungen über va_watchdog)
+  - id: va_finished
+    then:
+      - script.execute: amp_off_later
+      - lambda: |-
+          id(voice_assistant_busy) = false;
+          id(status_text) = "Bereit";
+      # LEDs aus, falls keine Erfolg-/Fehler-Animation mehr läuft
+      - if:
+          condition:
+            and:
+              - not:
+                  script.is_running: led_success
+              - not:
+                  script.is_running: led_error
+          then:
+            - script.execute: led_off
+      - lvgl.widget.refresh: status_label
+      - script.execute: auto_clear
+      # Während der Sprachausgabe empfangene Antwort jetzt anzeigen
+      - if:
+          condition:
+            lambda: 'return id(ans_pending);'
+          then:
+            - lambda: 'id(ans_pending) = false;'
+            - script.execute: answer_show
+      # Abschaltzeit ab jetzt, damit der gesprochene Satz noch lesbar ist
+      - script.execute: display_sleep
+      - if:
+          condition:
+            lambda: 'return !id(ota_running);'
+          then:
+            - micro_wake_word.start:
+
+  # Wächter: hängt der Assistent, nach einer Wartezeit stoppen und zurücksetzen.
+  #   phase 1 (Zuhören/Verarbeiten): spätestens nach 40 s
+  #   phase 2 (Sprechen): 10 s nachdem der Lautsprecher fertig ist (max. 60 s)
+  - id: va_watchdog
+    mode: restart
+    parameters:
+      phase: int
+    then:
+      - if:
+          condition:
+            lambda: 'return phase == 1;'
+          then:
+            - delay: 40s
+          else:
+            - delay: 3s
+            - wait_until:
+                condition:
+                  not:
+                    speaker.is_playing: onboard_speaker
+                timeout: 60s
+            - delay: 10s
+      - if:
+          condition:
+            lambda: 'return id(voice_assistant_busy);'
+          then:
+            - logger.log:
+                level: WARN
+                format: "Sprachassistent hängt (Phase %d) - wird zurückgesetzt"
+                args: ['phase']
+            - voice_assistant.stop:
+            - delay: 1s
+            # kam kein on_idle, selbst aufräumen
+            - if:
+                condition:
+                  lambda: 'return id(voice_assistant_busy);'
+                then:
+                  - script.execute: va_finished
+
   # Gesprochenen Satz nach 20 Sekunden ausblenden
   - id: auto_clear
     mode: restart
     then:
       # lange Texte länger stehen lassen, damit sie einmal durchlaufen
-      - delay: !lambda 'return id(tts_text).size() > 60 ? 40000 : 20000;'
+      - delay: !lambda |-
+          // mindestens 20 s; bei langem Text: 2 s Pause + Scrollzeit + 10 s
+          uint32_t t = 2000 + id(text_scroll_max) * 60 + 10000;
+          return t > 20000 ? t : 20000;
       - lambda: 'id(tts_text) = "";'
       - lvgl.widget.refresh: response_label
       - script.execute: idle_view
+      - script.execute: text_layout
 
   # Ruheanzeige: Uhrzeit, wenn kein Satz angezeigt wird und die Zeit bekannt ist
   - id: idle_view
@@ -1070,6 +1207,10 @@ voice_assistant:
     - script.stop: auto_clear
     - lambda: 'id(tts_text) = "";'
     - lvgl.widget.refresh: response_label
+    - script.execute: text_layout
+    - script.execute:
+        id: va_watchdog
+        phase: 1
     # Blauer Ring läuft ab
     - script.execute:
         id: led_set
@@ -1091,39 +1232,14 @@ voice_assistant:
         id(tts_text) = x;
     - lvgl.widget.refresh: response_label
     - script.execute: idle_view
+    - script.execute: text_layout
     - lvgl.widget.refresh: status_label
+    - script.execute:
+        id: va_watchdog
+        phase: 2
   # Alles fertig (auch die Sprachausgabe)
   on_idle:
-    - script.execute: amp_off_later
-    - lambda: |-
-        id(voice_assistant_busy) = false;
-        id(status_text) = "Bereit";
-    # Sicherheitsnetz: LEDs aus, falls keine Erfolg-/Fehler-Animation mehr läuft
-    - if:
-        condition:
-          and:
-            - not:
-                script.is_running: led_success
-            - not:
-                script.is_running: led_error
-        then:
-          - script.execute: led_off
-    - lvgl.widget.refresh: status_label
-    - script.execute: auto_clear
-    # Während der Sprachausgabe empfangene Antwort jetzt anzeigen
-    - if:
-        condition:
-          lambda: 'return id(ans_pending);'
-        then:
-          - lambda: 'id(ans_pending) = false;'
-          - script.execute: answer_show
-    # Abschaltzeit ab jetzt, damit der gesprochene Satz noch lesbar ist
-    - script.execute: display_sleep
-    - if:
-        condition:
-          lambda: 'return !id(ota_running);'
-        then:
-          - micro_wake_word.start:
+    - script.execute: va_finished
   # Fehler: rot blinken, dann aus
   on_error:
     - script.execute: amp_off_later
@@ -1344,6 +1460,7 @@ lvgl:
                   text_font: font_text
 
         - container:
+            id: response_box
             width: 120
             height: 92
             bg_color: "0x1a1a1a"
@@ -1351,19 +1468,19 @@ lvgl:
             border_width: 1
             border_color: "0x333333"
             pad_all: 4
-            scrollable: false
+            # scrollbar unsichtbar; gescrollt wird nur vom Skript text_layout
+            scrollable: true
+            scrollbar_mode: "OFF"
             layout:
               type: flex
               flex_flow: column
               flex_align_main: center
               flex_align_cross: center
             widgets:
-              # Passt der Text nicht ins Feld, läuft er langsam nach oben
-              # durch und wieder zurück (LVGL long_mode SCROLL)
+              # Mehrzeilig mit Umbruch; zu langer Text scrollt (Skript text_layout)
               - label:
                   id: response_label
-                  long_mode: SCROLL
-                  max_height: 82
+                  long_mode: WRAP
                   text: !lambda |-
                     if (!id(tts_text).empty()) {
                       return id(tts_text).c_str();
