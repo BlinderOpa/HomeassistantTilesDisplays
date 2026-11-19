@@ -658,7 +658,7 @@ text_sensor:
     icon: mdi:card-account-details-outline
     entity_category: diagnostic
     update_interval: 60s
-    lambda: 'return {"node=${node_name};type=satellite;size=medium;voice=yes;tiles=yes"};'
+    lambda: 'return {"node=${node_name};type=satellite;size=medium;voice=yes;tiles=compact;background=no;calendar=no"};'
 
 script:
   # Nach der Sprachausgabe noch einmal zuhören (nur wenn HA es verlangt und der

@@ -1,43 +1,36 @@
 blueprint:
   name: "Wall tiles: display brightness by time of day"
   description: >
-    Sets a display's brightness: bright during the day, dimmed after sunset, dark at night.
-    Optionally switches the display's night mode during the night: backlight off,
-    a tap wakes the display for a short time (wake time = number "Display Wachzeit" on the device).
-    Works for the 7" wall display and the voice satellites C6 and S3. Leave brightness empty for all
-    of them (the 7" has no brightness setting any more: its backlight is on/off only) and use the
-    night mode; the brightness inputs are only for displays that offer a number entity for it.
-    Runs at sunrise/sunset, at the night start/end times, on HA start and when the
-    device reports esphome.display_ready.
+    Sets the brightness of one display light (e.g. the backlight light entity of a voice
+    satellite): bright during the day, dimmed after sunset, dark at night (0 % = off).
+    Create one automation per light. No device names needed.
+    Runs at sunrise/sunset, at the night start/end times, on HA start and when the light
+    comes back after a restart of the device.
+
+    Night mode (backlight off, a tap wakes the display): switch "Display Nachtmodus" of the
+    device – switch it with a simple time automation of your own.
+    The 7" wall display has no brightness (its backlight is on/off only): use its night mode.
   domain: automation
   source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/automation/wall_tiles/display_brightness.yaml
   input:
-    brightness_entity:
-      name: Brightness (number entity of the display, optional)
-      description: >
-        Leave empty for the 7" wall display and the voice satellites (C6, S3; their brightness is
-        set on the light entity): then only the night mode switch is set.
-      default: ""
+    light_entity:
+      name: Display light
+      description: The light entity of the display backlight (or a number entity 0–100).
       selector:
         entity:
-          domain: number
-    node_name:
-      name: ESPHome node name (for the ready event)
-      default: "wall-display"
-      selector:
-        text:
+          domain: [light, number]
     day:
-      name: Day brightness
+      name: Day brightness (%)
       default: 80
-      selector: {number: {min: 0, max: 100}}
+      selector: {number: {min: 0, max: 100, unit_of_measurement: "%"}}
     evening:
-      name: Evening brightness (after sunset)
+      name: Evening brightness (%, after sunset)
       default: 40
-      selector: {number: {min: 0, max: 100}}
+      selector: {number: {min: 0, max: 100, unit_of_measurement: "%"}}
     night:
-      name: Night brightness
+      name: Night brightness (%, 0 = off)
       default: 10
-      selector: {number: {min: 0, max: 100}}
+      selector: {number: {min: 0, max: 100, unit_of_measurement: "%"}}
     night_start:
       name: Night starts
       default: "22:00:00"
@@ -46,16 +39,6 @@ blueprint:
       name: Night ends
       default: "06:00:00"
       selector: {time: {}}
-    night_mode_entity:
-      name: Night mode switch (optional)
-      description: >
-        The device's switch "Display Nachtmodus" (e.g. switch.my_wall_display_display_nachtmodus).
-        If set, it is on during the night: backlight off, a tap wakes the display briefly.
-        Alarm tiles and popups switch the backlight on as well.
-      default: ""
-      selector:
-        entity:
-          domain: switch
 
 mode: restart
 
@@ -70,19 +53,18 @@ triggers:
     at: !input night_end
   - trigger: homeassistant
     event: start
-  - trigger: event
-    event_type: esphome.display_ready
-    event_data:
-      device: !input node_name
+  # device restarted / reconnected
+  - trigger: state
+    entity_id: !input light_entity
+    from: unavailable
 
 variables:
-  ent: !input brightness_entity
+  ent: !input light_entity
   day_: !input day
   evening_: !input evening
   night_: !input night
   ns_: !input night_start
   ne_: !input night_end
-  night_switch: !input night_mode_entity
   is_night: >
     {% set t = now().strftime('%H:%M:%S') %}
     {{ (t >= ns_ or t < ne_) if ns_ > ne_ else (ns_ <= t < ne_) }}
@@ -92,20 +74,17 @@ variables:
     {% else %}{{ evening_ }}{% endif %}
 
 actions:
-  - if:
-      - condition: template
-        value_template: "{{ ent not in [none, ''] }}"
-    then:
-      - action: number.set_value
-        target:
-          entity_id: "{{ ent }}"
-        data:
-          value: "{{ value }}"
-  - if:
-      - condition: template
-        value_template: "{{ night_switch not in [none, ''] }}"
-    then:
-      - action: "switch.turn_{{ 'on' if is_night else 'off' }}"
-        continue_on_error: true
-        target:
-          entity_id: "{{ night_switch }}"
+  - choose:
+      - conditions: "{{ ent.startswith('number.') }}"
+        sequence:
+          - action: number.set_value
+            target: {entity_id: "{{ ent }}"}
+            data: {value: "{{ value }}"}
+      - conditions: "{{ value | int(0) <= 0 }}"
+        sequence:
+          - action: light.turn_off
+            target: {entity_id: "{{ ent }}"}
+    default:
+      - action: light.turn_on
+        target: {entity_id: "{{ ent }}"}
+        data: {brightness_pct: "{{ value | int }}"}

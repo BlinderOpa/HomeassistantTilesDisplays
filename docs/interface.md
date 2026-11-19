@@ -1,4 +1,4 @@
-# Interface: Home Assistant ↔ displays (v1.16)
+# Interface: Home Assistant ↔ displays (v1.18)
 
 Applies to every device that shows tiles or answers. Reference devices:
 
@@ -90,7 +90,8 @@ homeassistant.event:
 A tile is **one template sensor** whose entity id starts with `sensor.tile_` and that has the
 **label `Display`** (labels can only be set in the UI, so a `unique_id` is required).
 Which display shows it is also decided by labels: `Display` = **all** displays,
-`Display <device>` = only that device (e.g. `Display my-wall-display`; several such labels =
+`Display <device>` = only that device (`<device>` = ESPHome node name or device name in HA,
+e.g. `Display my-wall-display`; several such labels =
 several devices; case, `_`, `-` and spaces don't matter). A tile with only `Display <device>`
 labels is not shown elsewhere.
 The tile `id` is the part after `sensor.tile_`. HA turns umlauts into a/o/u in entity ids.
@@ -116,10 +117,11 @@ Round fast-changing values (power) so not every small change triggers a new send
 ### 4.2 Action `set_tiles`
 
 `sensor.wall_tiles` (package `tiles_collector.yaml`) builds the sorted list (max. 24, each tile
-with a field `displays`) in its attribute `tiles`; the blueprint `tiles_push.yaml` picks the tiles
-of its device (labels `Display` / `Display <device>`; optional input `display_name` if the label
-text differs from the node name), cuts to `max_tiles` and sends the JSON on every change. The
-field `displays` is not sent to the device.
+with a field `displays`) in its attribute `tiles`; the blueprint `tiles_push.yaml` (one automation
+for all devices) finds every device with `tiles=full` or `tiles=compact` in its `Display-Info`
+(4.10), picks its tiles (labels `Display` / `Display <device>`), cuts to `max_tiles` and sends the
+JSON on every change (compact: only `id, tap, status, title, value, detail`). The field
+`displays` is not sent to the device.
 
 **C6:** tile no. 1 is always a local clock (weekday, time, date). It is not in the list from HA,
 so the C6 shows the clock plus up to 12 tiles.
@@ -241,7 +243,7 @@ Instead the device offers:
 While the backlight is off, LVGL is paused, so the waking tap never triggers a tile or button.
 Also on in night mode: a tile with `status: alarm` (until it is gone), and `show_answer` /
 `show_question` (for the wake time). When it goes dark, the 4×3 tile view is closed.
-HA switches the night mode via the blueprint `display_brightness.yaml` (input `night_mode_entity`).
+HA switches the night mode with a simple time automation of your own (no blueprint needed).
 
 **C6:** same entities `Display Nachtmodus` and `Display Wachzeit` (5–600 s, default 30). The C6 backlight stays an
 ordinary dimmable light entity (`Display Hintergrundbeleuchtung`): its brightness is set there, and
@@ -276,7 +278,7 @@ a recognised command allows the next follow-up. Devices without the action ignor
 Every device reports what it is, as a diagnostic text sensor (in HA `sensor.<device>_display_info`):
 
 ```
-node=wall-display;type=wall;size=large;voice=no;tiles=yes
+node=wall-display;type=wall;size=large;voice=no;tiles=full;background=yes;calendar=no
 ```
 
 | key | values | meaning |
@@ -285,11 +287,14 @@ node=wall-display;type=wall;size=large;voice=no;tiles=yes
 | `type` | `wall`, `satellite` | kind of device |
 | `size` | `large` (7"), `medium` (C6), `small` (S3) | display size class |
 | `voice` | `yes`, `no` | has a microphone / voice assistant |
-| `tiles` | `yes`, `no` | implements `set_tiles` |
+| `tiles` | `full` (7"), `compact` (C6), `no` (S3) | implements `set_tiles`; compact = short payload. Old firmware: `yes` (HA treats it as compact for small/medium, else full) |
+| `background` | `yes`, `no` | implements `set_background` (4.6) |
+| `calendar` | `yes`, `no` | implements `set_calendar` (4.7); the 7" says `yes` only with `wall-display-calendar.yaml` (substitution `display_calendar`) |
 
 The values are fixed in each firmware (the firmware knows its hardware). HA finds all devices
-by this sensor, so `display_answer` needs no mapping list any more; a new device only has to be
-flashed. Keys may be added later; HA ignores unknown keys. Devices without the sensor can still
+by this sensor, so no blueprint needs a device name: `display_answer`, `tiles_push`,
+`calendar_push` and `weather_background` each serve all suitable devices with one automation and
+react to `esphome.display_ready` of any device. A new or renamed device only has to be flashed. Keys may be added later; HA ignores unknown keys. Devices without the sensor can still
 be listed in the optional `devices` input of `display_answer`.
 
 ## 5. What each device implements
@@ -315,6 +320,7 @@ New fields only as optional fields with a default (old devices ignore unknown JS
 New icons go into 1.2 first, then into the devices. Incompatible changes bump the major version.
 
 ### Changelog
+- v1.18: `Display-Info` (4.10) also reports `tiles=full/compact/no`, `background`, `calendar`. Blueprints `tiles_push`, `calendar_push`, `weather_background` without node name: one automation each serves every suitable device (inputs `node_name`, `display_name`, `compact` removed). `display_brightness` sets one light (or number) by time and has no node name or night mode any more; the night mode is switched by your own automation. All three firmwares change (`Display-Info` text only).
 - v1.17: tiles per display by labels (4.1): `Display` = all displays, `Display <device>` = only that device; `tiles_collector.yaml` delivers up to 24 tiles with the field `displays`, `tiles_push.yaml` filters per device (new optional input `display_name`). C6: tile 1 is a local clock (time and date) and the "no tiles" text is gone. Old setups (only the label `Display`) work unchanged; the C6 firmware changes.
 - v1.16: sensor `Display-Info` (4.10) on all three devices; `display_answer` finds the devices by it (the `devices` list is optional now) and knows the targets `satellites` and `voice` and node names. All three firmwares change.
 - v1.15: 7" without brightness: number `Display Helligkeit` and the dimming overlay removed (the backlight is on/off only; use the night mode, 4.8). Display `update_interval: never` (LVGL redraws itself), `min_version` 2026.9.0. HA: identify the 7" in `display_answer` by another entity (e.g. `number.<node>_display_wachzeit`); `display_brightness` without `brightness_entity`. Only the 7" firmware changes.

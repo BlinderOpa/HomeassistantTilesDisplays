@@ -12,6 +12,7 @@
 # ============================================================================
 
 substitutions:
+  display_calendar: "yes"        # meldet HA über Display-Info, dass das Display den Kalender kann
   cal_home_page: page_wetter     # Seite, von der aus gewischt wird
   cal_font_src: tile_0_detail    # Label, dessen Schrift die Zellen nutzen (f14)
   cal_font_bold_src: tile_0_value  # Label, dessen Schrift die Köpfe nutzen (f20b)

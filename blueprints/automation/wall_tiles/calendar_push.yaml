@@ -1,27 +1,21 @@
 blueprint:
-  name: "Wall tiles: push week calendar to the wall display"
+  name: "Wall tiles: push week calendar to the displays"
   description: >
-    Sends the week calendar from sensor.wall_calendar (package wall_calendar.yaml) to the wall
-    display via its API action "set_calendar" – on every change, on HA start and when the device
-    reports "esphome.display_ready".
-    The display needs the optional firmware part esphome/wall-display-calendar.yaml,
-    otherwise the action does not exist.
+    Sends the week calendar from sensor.wall_calendar (package wall_calendar.yaml) via the API
+    action "set_calendar" to every display whose sensor "Display-Info" says calendar=yes
+    (the 7" wall display with the firmware part esphome/wall-display-calendar.yaml).
+    No device names needed. Runs on every change, on HA start and when a device reports
+    "esphome.display_ready" (then only that device).
   domain: automation
   source_url: https://github.com/BlinderOpa/HomeassistantTilesDisplays/blob/main/blueprints/automation/wall_tiles/calendar_push.yaml
   input:
-    node_name:
-      name: ESPHome node name
-      description: >
-        As in the device YAML (esphome: name:), e.g. "wall-display".
-        The action called is esphome.<node_name with - replaced by _>_set_calendar.
-      selector:
-        text:
     calendar_entity:
       name: Calendar sensor
       default: sensor.wall_calendar
       selector: {entity: {domain: sensor}}
 
-mode: restart
+mode: queued
+max: 5
 
 triggers:
   - trigger: state
@@ -29,22 +23,48 @@ triggers:
     attribute: cal
   - trigger: event
     event_type: esphome.display_ready
-    event_data:
-      device: !input node_name
+    id: ready
   - trigger: homeassistant
     event: start
 
 variables:
-  node: !input node_name
   cal_e: !input calendar_entity
-  service: "esphome.{{ node | replace('-', '_') }}_set_calendar"
+  # all devices that report themselves via sensor "Display-Info" (interface 4.10)
+  devices: >
+    {% set ns = namespace(l=[]) %}
+    {% for e in integration_entities('esphome')
+         if e.startswith('sensor.') and e.endswith('_display_info') %}
+      {% set s = states(e) %}
+      {% set node = s | regex_findall('node=([^;]+)') | first | default('') %}
+      {% if node %}
+        {% set size = s | regex_findall('size=([^;]+)') | first | default('') %}
+        {% set tiles = s | regex_findall('tiles=([^;]+)') | first | default('no') %}
+        {% set ns.l = ns.l + [{
+          'node': node,
+          'name': device_attr(device_id(e), 'name') or node,
+          'size': size,
+          'tiles': ('compact' if size in ['small', 'medium'] else 'full') if tiles == 'yes' else tiles,
+          'background': s | regex_findall('background=([^;]+)') | first | default('no'),
+          'calendar': s | regex_findall('calendar=([^;]+)') | first | default('no')
+        }] %}
+      {% endif %}
+    {% endfor %}
+    {{ ns.l }}
+  targets: >
+    {% set only = trigger.event.data.device if trigger.id == 'ready' else '' %}
+    {{ devices | selectattr('calendar', 'eq', 'yes')
+               | selectattr('node', 'in', [only] if only else (devices | map(attribute='node') | list))
+               | list }}
 
 conditions:
-  - "{{ state_attr(cal_e, 'cal') is not none }}"
+  - "{{ state_attr(cal_e, 'cal') is not none and targets | count > 0 }}"
 
 actions:
   - delay: 3
-  - action: "{{ service }}"
-    continue_on_error: true   # device may be offline
-    data:
-      cal: "{{ state_attr(cal_e, 'cal') | to_json }}"
+  - repeat:
+      for_each: "{{ targets }}"
+      sequence:
+        - action: "esphome.{{ repeat.item.node | replace('-', '_') }}_set_calendar"
+          continue_on_error: true   # device may be offline
+          data:
+            cal: "{{ state_attr(cal_e, 'cal') | to_json }}"

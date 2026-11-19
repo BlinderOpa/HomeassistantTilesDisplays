@@ -72,10 +72,10 @@ blueprints/
                                 back to another one if it is unavailable (e.g. Met.no 503)
   automation/wall_tiles/
     tile_tap_handler          tap on a tile → toggle / run action        (once)
-    tiles_push                send tiles to one ESPHome display          (per display)
-    calendar_push             send the week calendar to the wall display (with wall_calendar)
-    display_brightness        night mode by time (dark at night, a tap wakes); brightness only where a number exists
-    weather_background        faded photo behind the base view, chosen by the current weather
+    tiles_push                send tiles to all displays that show tiles (found automatically, once)
+    calendar_push             send the week calendar to all displays with calendar (once)
+    display_brightness        brightness of one display light by time of day   (per light)
+    weather_background        faded photo behind the base view, chosen by the current weather (once)
     appliance_done_detect     sets the "done" flag of an appliance
     voice_ack_tile            "Müll ist draußen" = tap by voice
     voice_switch_tile         "E-Bike laden" / "E-Bike aus"
@@ -133,7 +133,7 @@ tools/ha_cleanup_check.jinja  paste into Developer tools → Template: missing, 
 4. *Developer tools → YAML → reload all*.
 5. Give every `sensor.tile_*` the label **Display** (Settings → Entities → Labels) to show it on
    all displays, or **Display <device>** (e.g. `Display my-wall-display`) to show it only there.
-   The device name is the node name of the push automation (or its input `display_name`).
+   `<device>` is the ESPHome node name or the device name in HA.
    `input_boolean.wall_tiles_debug` shows all tiles, also hidden/unlabelled ones, for 15 min.
 
 ### ESPHome devices

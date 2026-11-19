@@ -84,46 +84,45 @@ automation:
     alias: "Wall tiles: handle taps"
     use_blueprint:
       path: wall_tiles/tile_tap_handler.yaml
-  - id: wall_tiles_push_wall
-    alias: "Wall tiles: push to wall display"
+  # The next three serve ALL suitable devices – found via their sensor "Display-Info".
+  # No device names: a new or renamed display only has to be flashed.
+  - id: wall_tiles_push
+    alias: "Wall tiles: push to all displays"
     use_blueprint:
       path: wall_tiles/tiles_push.yaml
-      input:
-        node_name: my-wall-display
-        # Shows tiles labelled "Display" or "Display my-wall-display".
-        # display_name: only needed if the label text differs from the node name
+      input: {}
+      # Tiles labelled "Display" go everywhere, "Display <node or device name>" only there.
   - id: wall_calendar_push        # only with package wall_calendar.yaml + firmware wall-display-calendar.yaml
     alias: "Wall display: send calendar"
     use_blueprint:
       path: wall_tiles/calendar_push.yaml
-      input:
-        node_name: my-wall-display
+      input: {}
   - id: wall_weather_background
     alias: "Wall display: weather background"
     use_blueprint:
       path: wall_tiles/weather_background.yaml
       input:
-        node_name: my-wall-display
         weather_entity: weather.home
         image_root: /media/wall_backgrounds     # network storage "wall_backgrounds" (usage: Media)
         base_url: "http://homeassistant.local:8123"   # better: the IP address of HA
         brightness: 35
         interval: 30
-  - id: wall_tiles_push_c6
-    alias: "Wall tiles: push to voice satellite C6"
-    use_blueprint:
-      path: wall_tiles/tiles_push.yaml
-      input:
-        node_name: my-voice-c6
-        compact: true
-        # Shows tiles labelled "Display" or "Display my-voice-c6".
-  - id: wall_display_night_mode
-    alias: "Wall display: night mode"
+  # brightness by time of day: one automation per display light (voice satellites)
+  - id: voice_c6_brightness
+    alias: "Voice C6: brightness by time"
     use_blueprint:
       path: wall_tiles/display_brightness.yaml
       input:
-        node_name: my-wall-display
-        night_mode_entity: switch.my_wall_display_display_nachtmodus   # backlight off at night, tap wakes
+        light_entity: light.my_voice_c6_display_backlight
+  # night mode (backlight off, a tap wakes): plain automation, no blueprint needed
+  - id: wall_display_night_mode
+    alias: "Wall display: night mode"
+    triggers:
+      - {trigger: time, at: "22:00:00", id: "on"}
+      - {trigger: time, at: "06:00:00", id: "off"}
+    actions:
+      - action: "switch.turn_{{ trigger.id }}"
+        target: {entity_id: switch.my_wall_display_display_nachtmodus}
 
   - id: laundry_done_detect
     alias: "Laundry: detect done"
