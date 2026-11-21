@@ -26,7 +26,7 @@ All devices are Waveshare boards, flashed with ESPHome (running with ESPHome 202
 
 | Device | Board | ESPHome file | What it does |
 |---|---|---|---|
-| **Wall display 7"** | Waveshare ESP32-S3-Touch-LCD-7 – ESP32-S3, 16 MB flash, 8 MB PSRAM, 800×480 RGB display, GT911 touch, CH422G IO expander | [`esphome/wall-display.yaml`](esphome/wall-display.yaml) | weather-station base view, up to 4 small tiles + full 4×3 tile view, alarm banner, answer popups, yes/no dialog, tap on tiles. No microphone/speaker. |
+| **Wall display 7"** | Waveshare ESP32-S3-Touch-LCD-7 – ESP32-S3, 16 MB flash, 8 MB PSRAM, 800×480 RGB display, GT911 touch, CH422G IO expander | [`esphome/wall-display.yaml`](esphome/wall-display.yaml) | weather-station base view (optionally with consumption, grid, PV and battery next to the clock), up to 4 small tiles + full 4×3 tile view, alarm banner, answer popups, yes/no dialog, tap on tiles. No microphone/speaker. |
 | **Voice satellite C6** | Waveshare ESP32-C6-Touch-LCD-1.83 – ESP32-C6, 240×284 ST7789 display, CST816 touch, ES8311/ES7210 audio, QMI8658 IMU, PCF85063 RTC | [`esphome/voice-satellite-c6.yaml`](esphome/voice-satellite-c6.yaml) | Assist voice satellite (push-to-talk button, no wake word), answers on screen, swipe through the tiles, tap = same as on the wall display, yes/no by touch. Optional follow-up commands (a voice automation can make it listen once more, e.g. "Rollo hoch" then "Rollo stop") and an adjustable display timeout plus night mode (screen off, wakes on touch, button, answer or new alarm tile). |
 | **Voice satellite S3** | Waveshare ESP32-S3-LCD-0.85 – ESP32-S3, 128×128 ST7735 display, ES8311/ES7210 audio, PLUS/MINUS/PWR buttons, status LEDs | [`esphome/voice-satellite-s3.yaml`](esphome/voice-satellite-s3.yaml) | Assist voice satellite with wake word "Okay Nabu" (micro wake word on the device), answers as icon + short value, yes/no with the PLUS/MINUS buttons. No tiles. |
 
@@ -102,6 +102,7 @@ packages/                     only what needs fixed helpers or trigger-based tem
   wall_tiles/tile_school      WebUntis cancelled lessons
   voice/voice_shutters        shutters per room by voice, stop, tile "Rollo fährt"
   weather_station             sensor.ws_* for the 7" base view
+  energy_display              optional: sensor.ws_energy_* – consumption, grid, PV, battery next to the clock (7")
   weather_background          shell command that picks + prepares the background photo (ffmpeg)
   wall_calendar               optional: week calendar page (one column per label "Kalender <name>") + tile_calendar
 examples/my_wall_tiles.yaml   YOUR configuration: all blueprint calls in one package

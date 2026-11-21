@@ -1,4 +1,4 @@
-# Interface: Home Assistant ↔ displays (v1.18)
+# Interface: Home Assistant ↔ displays (v1.19)
 
 Applies to every device that shows tiles or answers. Reference devices:
 
@@ -297,6 +297,23 @@ by this sensor, so no blueprint needs a device name: `display_answer`, `tiles_pu
 react to `esphome.display_ready` of any device. A new or renamed device only has to be flashed. Keys may be added later; HA ignores unknown keys. Devices without the sensor can still
 be listed in the optional `devices` input of `display_answer`.
 
+### 4.11 Energy next to the clock (7", optional)
+
+Left and right of the clock the display can show live energy values. It reads only these entities
+(package `energy_display.yaml`); every line appears only while its sensor has a value, so without
+the package the area stays empty and without a battery only the battery line is missing.
+
+| entity | content | shown as |
+|---|---|---|
+| `sensor.ws_energy_house` | house consumption, W | left: "Verbrauch" |
+| `sensor.ws_energy_grid` | grid, W: + buying, − feeding in | left: "Netzbezug" (red) / "Einspeisung" (green) / "Netz" (below 50 W) |
+| `sensor.ws_energy_pv` | PV production, W | right: "PV" (yellow from 50 W, grey otherwise) |
+| `sensor.ws_energy_battery_soc` | battery state of charge, % | right: "Akku" with value and bar |
+| `sensor.ws_energy_battery` | battery power, W: + charging, − discharging (optional) | right: "Akku · lädt …" (green) / "Akku · entlädt …" (orange) |
+
+Below 1 kW values are shown in W (rounded to 10 W), above in kW with one decimal. The display
+averages the power values over 20 s. The alarm banner covers the area like the clock.
+
 ## 5. What each device implements
 
 | | S3 | C6 | 7" |
@@ -310,6 +327,7 @@ be listed in the optional `devices` input of `display_answer`.
 | event `display_ready` | optional | optional | ✅ |
 | weather-station base view | – | – | ✅ |
 | `set_background` | – | – | ✅ |
+| energy next to the clock (4.11) | – | – | ✅ optional |
 | night mode (switch "Display Nachtmodus", number "Display Wachzeit") | ✅ | ✅ | ✅ |
 | `set_calendar` | – | – | optional (calendar package) |
 | sensor `Display-Info` (4.10) | ✅ | ✅ | ✅ |
@@ -320,6 +338,7 @@ New fields only as optional fields with a default (old devices ignore unknown JS
 New icons go into 1.2 first, then into the devices. Incompatible changes bump the major version.
 
 ### Changelog
+- v1.19: 7": optional energy values next to the clock (4.11) from the new package `energy_display.yaml` (`sensor.ws_energy_*`). Only the 7" firmware changes; without the package nothing changes on the display.
 - v1.18: `Display-Info` (4.10) also reports `tiles=full/compact/no`, `background`, `calendar`. Blueprints `tiles_push`, `calendar_push`, `weather_background` without node name: one automation each serves every suitable device (inputs `node_name`, `display_name`, `compact` removed). `display_brightness` sets one light (or number) by time and has no node name or night mode any more; the night mode is switched by your own automation. All three firmwares change (`Display-Info` text only).
 - v1.17: tiles per display by labels (4.1): `Display` = all displays, `Display <device>` = only that device; `tiles_collector.yaml` delivers up to 24 tiles with the field `displays`, `tiles_push.yaml` filters per device (new optional input `display_name`). C6: tile 1 is a local clock (time and date) and the "no tiles" text is gone. Old setups (only the label `Display`) work unchanged; the C6 firmware changes.
 - v1.16: sensor `Display-Info` (4.10) on all three devices; `display_answer` finds the devices by it (the `devices` list is optional now) and knows the targets `satellites` and `voice` and node names. All three firmwares change.

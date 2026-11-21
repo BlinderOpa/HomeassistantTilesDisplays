@@ -1,0 +1,77 @@
+# Energy next to the clock on the 7" display (interface 4.11) – optional
+# The display ONLY reads these sensor.ws_energy_* entities. Without this package the area next to the
+# clock stays empty; each missing source only hides its own line (e.g. no battery → no battery line).
+# Changing a source = change it here, the display does not need to be reflashed.
+#
+# Units: power in W (sources in kW are converted automatically), battery state of charge in %.
+# Signs: ws_energy_grid     + = buying from the grid, − = feeding in
+#        ws_energy_battery  + = charging,             − = discharging
+#
+# ── ADAPT ──────────────────────────────────────────────────────────────
+#   sensor.house_power          house consumption
+#   sensor.pv_power             PV production
+#   sensor.grid_import_power    power bought from the grid  (≥ 0)
+#   sensor.grid_export_power    power fed into the grid     (≥ 0)
+#     only ONE signed grid sensor? Use it in "WS Energy Grid" instead of import − export
+#     (with a minus in front if your sensor counts feeding in as positive).
+#   sensor.battery_soc          battery state of charge %
+#   battery power: calculated from the balance (PV + grid − house), so the sign is always right.
+#     If you have a reliable battery power sensor, you may use it instead (+ = charging).
+#   No battery / no PV? Delete that sensor below – the display hides the line.
+template:
+  - sensor:
+      - name: "WS Energy House"
+        unique_id: ws_energy_house
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        state: >
+          {% set e = 'sensor.house_power' %}
+          {{ (states(e) | float(0) * (1000 if state_attr(e, 'unit_of_measurement') == 'kW' else 1)) | round(0) }}
+        availability: "{{ states('sensor.house_power') | is_number }}"
+
+      - name: "WS Energy PV"
+        unique_id: ws_energy_pv
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        state: >
+          {% set e = 'sensor.pv_power' %}
+          {{ ([states(e) | float(0), 0] | max * (1000 if state_attr(e, 'unit_of_measurement') == 'kW' else 1)) | round(0) }}
+        availability: "{{ states('sensor.pv_power') | is_number }}"
+
+      - name: "WS Energy Grid"
+        unique_id: ws_energy_grid
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        state: >
+          {% set i, x = 'sensor.grid_import_power', 'sensor.grid_export_power' %}
+          {% set vi = states(i) | float(0) * (1000 if state_attr(i, 'unit_of_measurement') == 'kW' else 1) %}
+          {% set vx = states(x) | float(0) * (1000 if state_attr(x, 'unit_of_measurement') == 'kW' else 1) %}
+          {{ (vi - vx) | round(0) }}
+        availability: >
+          {{ states('sensor.grid_import_power') | is_number and states('sensor.grid_export_power') | is_number }}
+
+      - name: "WS Energy Battery SoC"
+        unique_id: ws_energy_battery_soc
+        unit_of_measurement: "%"
+        device_class: battery
+        state_class: measurement
+        state: "{{ states('sensor.battery_soc') | float(0) | round(0) }}"
+        availability: "{{ states('sensor.battery_soc') | is_number }}"
+
+      # + = charging, − = discharging (from the balance: PV + grid − house)
+      - name: "WS Energy Battery"
+        unique_id: ws_energy_battery
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        state: >
+          {{ (states('sensor.ws_energy_pv') | float(0) + states('sensor.ws_energy_grid') | float(0)
+              - states('sensor.ws_energy_house') | float(0)) | round(0) }}
+        availability: >
+          {{ states('sensor.battery_soc') | is_number
+             and states('sensor.ws_energy_pv') | is_number
+             and states('sensor.ws_energy_grid') | is_number
+             and states('sensor.ws_energy_house') | is_number }}

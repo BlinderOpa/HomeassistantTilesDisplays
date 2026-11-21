@@ -7,12 +7,13 @@
 #   Grundansicht "Wetterstation" (4.5), immer sichtbar:
 #     oben   Außen | Vorhersage heute | Innen
 #     Mitte  Uhr + Datum (bei Alarm: rotes Hinweisfeld darüber)
+#            links/rechts daneben optional Energie: Verbrauch + Netz | PV + Akku (4.11)
 #     unten  Sonnenauf-/untergang, oder bis zu 4 kleine Kacheln (+n)
 #   Aktionen: show_answer, show_question, cancel_question, set_tiles, set_background
 #   Hintergrund: Wetterbild als JPEG von HA (set_background, Schnittstelle 4.6)
 #   Nachtmodus: Beleuchtung aus, Antippen weckt für kurze Zeit (Schnittstelle 4.8)
 #   Events:   esphome.display_question_answer, esphome.display_tap, esphome.display_ready
-# Daten: nur sensor.ws_* aus dem HA-Package weather_station.yaml
+# Daten: nur sensor.ws_* aus den HA-Packages weather_station.yaml und energy_display.yaml
 # ============================================================================
 
 substitutions:
@@ -558,6 +559,47 @@ sensor:
     on_value:
       - lvgl.widget.refresh: fc_maxmin
 
+  # Energie neben der Uhr (Schnittstelle 4.11), Package energy_display.yaml – alles optional:
+  # fehlt ein Sensor in HA, bleibt seine Zeile leer. Leistungen in W, gemittelt gegen Flackern.
+  - platform: homeassistant
+    id: en_house
+    entity_id: sensor.ws_energy_house
+    internal: true
+    filters:
+      - throttle_average: 20s
+    on_value:
+      - script.execute: energy_update
+  - platform: homeassistant
+    id: en_grid
+    entity_id: sensor.ws_energy_grid
+    internal: true
+    filters:
+      - throttle_average: 20s
+    on_value:
+      - script.execute: energy_update
+  - platform: homeassistant
+    id: en_pv
+    entity_id: sensor.ws_energy_pv
+    internal: true
+    filters:
+      - throttle_average: 20s
+    on_value:
+      - script.execute: energy_update
+  - platform: homeassistant
+    id: en_soc
+    entity_id: sensor.ws_energy_battery_soc
+    internal: true
+    on_value:
+      - script.execute: energy_update
+  - platform: homeassistant
+    id: en_bat
+    entity_id: sensor.ws_energy_battery
+    internal: true
+    filters:
+      - throttle_average: 20s
+    on_value:
+      - script.execute: energy_update
+
 text_sensor:
   # Geräte-Steckbrief für Home Assistant (Schnittstelle 4.10): HA findet das Gerät darüber
   # selbst und weiß, was es kann – keine Zuordnungsliste in display_answer nötig.
@@ -755,6 +797,71 @@ globals:
       }
 
 script:
+  # Energie neben der Uhr (Schnittstelle 4.11): Texte, Farben, Symbole; Zeilen ohne Daten bleiben aus
+  - id: energy_update
+    mode: restart
+    then:
+      - lambda: |-
+          auto show = [](lv_obj_t *o, bool on) {
+            if (on) lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+          };
+          auto color = [](lv_obj_t *o, uint32_t c) {
+            lv_obj_set_style_text_color(o, lv_color_hex(c), LV_PART_MAIN);
+          };
+          // unter 1 kW in W (auf 10 W gerundet), sonst kW mit einer Nachkommastelle
+          auto power = [](float w) -> std::string {
+            float a = fabsf(w);
+            if (a < 995.0f) return str_sprintf("%d W", (int) (roundf(a / 10.0f) * 10.0f));
+            return id(fmt_num)(a / 1000.0f, 1) + " kW";
+          };
+          const uint32_t GREY = 0x607D8B, TEXT = 0xECEFF1;
+
+          // Verbrauch
+          float house = id(en_house).state;
+          show(id(en_row_house), !isnan(house));
+          if (!isnan(house)) lv_label_set_text(id(en_house_val), power(house).c_str());
+
+          // Netz: + Bezug, - Einspeisung, unter 50 W neutral
+          float grid = id(en_grid).state;
+          show(id(en_row_grid), !isnan(grid));
+          if (!isnan(grid)) {
+            bool imp = grid >= 50.0f, feed = grid <= -50.0f;
+            uint32_t c = imp ? 0xEF9A9A : (feed ? 0xA5D6A7 : GREY);
+            lv_label_set_text(id(en_grid_icon), imp ? "\U000F192D" : (feed ? "\U000F192C" : "\U000F0D3E"));
+            lv_label_set_text(id(en_grid_lbl), imp ? "Netzbezug" : (feed ? "Einspeisung" : "Netz"));
+            lv_label_set_text(id(en_grid_val), (imp || feed) ? power(grid).c_str() : "0 W");
+            color(id(en_grid_icon), c);
+            color(id(en_grid_val), (imp || feed) ? c : TEXT);
+          }
+
+          // PV: gelb ab 50 W, sonst grau
+          float pv = id(en_pv).state;
+          show(id(en_row_pv), !isnan(pv));
+          if (!isnan(pv)) {
+            bool sun = pv >= 50.0f;
+            lv_label_set_text(id(en_pv_val), sun ? power(pv).c_str() : "0 W");
+            color(id(en_pv_icon), sun ? 0xFFD54F : GREY);
+            color(id(en_pv_val), sun ? 0xFFE082 : TEXT);
+          }
+
+          // Akku: Ladestand + Balken; Leistung + laden, - entladen (optional)
+          float soc = id(en_soc).state, bat = id(en_bat).state;
+          show(id(en_row_bat), !isnan(soc));
+          if (!isnan(soc)) {
+            int p = (int) roundf(soc < 0 ? 0 : (soc > 100 ? 100 : soc));
+            bool chg = !isnan(bat) && bat >= 50.0f, dis = !isnan(bat) && bat <= -50.0f;
+            uint32_t c = chg ? 0x9CCC65 : (dis ? 0xFFB74D : (p < 20 ? 0xEF9A9A : 0x81C784));
+            const char *ico = chg ? "\U000F0084" : (dis ? "\U000F17DE"
+                              : (p >= 80 ? "\U000F0079" : (p >= 50 ? "\U000F12A3" : (p >= 20 ? "\U000F12A2" : "\U000F12A1"))));
+            std::string lbl = chg ? "Akku · lädt " + power(bat) : (dis ? "Akku · entlädt " + power(bat) : std::string("Akku"));
+            lv_label_set_text(id(en_bat_icon), ico);
+            lv_label_set_text(id(en_bat_lbl), lbl.c_str());
+            lv_label_set_text(id(en_bat_val), str_sprintf("%d %%", p).c_str());
+            lv_bar_set_value(id(en_bat_bar), p, LV_ANIM_OFF);
+            color(id(en_bat_icon), c);
+            lv_obj_set_style_bg_color(id(en_bat_bar), lv_color_hex(c), LV_PART_INDICATOR);
+          }
+
   # Beleuchtung an, wenn: Schalter an UND (kein Nachtmodus ODER geweckt ODER Alarm)
   - id: apply_backlight
     mode: queued
@@ -909,7 +1016,9 @@ font:
   - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
     id: mdi36
     size: 36
-    glyphs: ["\U000F012C", "\U000F0156", "\U000F0026", "\U000F02FC", "\U000F02D6", "\U000F0A79", "\U000F052C", "\U000F072A", "\U000F050F", "\U000F1502", "\U000F0083", "\U000F06A5", "\U000F0606", "\U000F081C", "\U000F07E4", "\U000F0A72", "\U000F042A", "\U000F0110", "\U000F05A9", "\U000F15B4", "\U000F1402", "\U000F00ED", "\U000F0335", "\U000F0238", "\U000F042B", "\U000F11C0", "\U000F1A43", "\U000F146C", "\U000F111C", "\U000F111E", "\U000F0599", "\U000F0594", "\U000F0595", "\U000F0590", "\U000F0597", "\U000F0596", "\U000F0598", "\U000F067F", "\U000F0591", "\U000F0592", "\U000F0593", "\U000F067E", "\U000F059D", "\U000F0241", "\U000F0E01", "\U000F10C2", "\U000F11BC", "\U000F1509", "\U000F1A85", "\U000F05B7", "\U000F11AB", "\U000F03FA", "\U000F0F29", "\U000F0F36", "\U000F0A7A", "\U000F059C", "\U000F059B", "\U000F058E", "\U000F054B", "\U000F0150", "\U000F051B", "\U000F0210", "\U000F0020", "\U000F0023", "\U000F0084", "\U000F0996", "\U000F0474"]
+    glyphs: ["\U000F012C", "\U000F0156", "\U000F0026", "\U000F02FC", "\U000F02D6", "\U000F0A79", "\U000F052C", "\U000F072A", "\U000F050F", "\U000F1502", "\U000F0083", "\U000F06A5", "\U000F0606", "\U000F081C", "\U000F07E4", "\U000F0A72", "\U000F042A", "\U000F0110", "\U000F05A9", "\U000F15B4", "\U000F1402", "\U000F00ED", "\U000F0335", "\U000F0238", "\U000F042B", "\U000F11C0", "\U000F1A43", "\U000F146C", "\U000F111C", "\U000F111E", "\U000F0599", "\U000F0594", "\U000F0595", "\U000F0590", "\U000F0597", "\U000F0596", "\U000F0598", "\U000F067F", "\U000F0591", "\U000F0592", "\U000F0593", "\U000F067E", "\U000F059D", "\U000F0241", "\U000F0E01", "\U000F10C2", "\U000F11BC", "\U000F1509", "\U000F1A85", "\U000F05B7", "\U000F11AB", "\U000F03FA", "\U000F0F29", "\U000F0F36", "\U000F0A7A", "\U000F059C", "\U000F059B", "\U000F058E", "\U000F054B", "\U000F0150", "\U000F051B", "\U000F0210", "\U000F0020", "\U000F0023", "\U000F0084", "\U000F0996", "\U000F0474",
+             # Energie neben der Uhr (4.11)
+             "\U000F1904", "\U000F0D3E", "\U000F192D", "\U000F192C", "\U000F05A8", "\U000F0079", "\U000F12A3", "\U000F12A2", "\U000F12A1", "\U000F17DE"]
   - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
     id: mdi72
     size: 72
@@ -2314,6 +2423,178 @@ lvgl:
                                              "November", "Dezember"};
               return str_sprintf("%s, %d. %s", tage[now.day_of_week - 1], now.day_of_month,
                                  monate[now.month - 1]);
+
+        # =============== Mitte links/rechts: Energie (optional, Schnittstelle 4.11) ===============
+        # Ohne Rahmen direkt auf dem Hintergrund; Zeilen erscheinen erst mit Daten aus HA.
+        - obj:
+            id: en_left
+            x: 12
+            y: 186
+            width: 236
+            height: 144
+            styles: plain
+            scrollable: false
+            clickable: false
+            widgets:
+              - obj:
+                  id: en_row_house
+                  x: 0
+                  y: 4
+                  width: 236
+                  height: 66
+                  styles: plain
+                  hidden: true
+                  scrollable: false
+                  clickable: false
+                  widgets:
+                    - label:
+                        id: en_house_icon
+                        x: 0
+                        y: 10
+                        text_font: mdi36
+                        text_color: 0x90CAF9
+                        text: "\U000F1904"
+                    - label:
+                        x: 48
+                        y: 2
+                        width: 188
+                        long_mode: DOT
+                        text_font: f14
+                        text_color: 0x90A4AE
+                        text: "Verbrauch"
+                    - label:
+                        id: en_house_val
+                        x: 48
+                        y: 20
+                        text_font: f26b
+                        text_color: 0xECEFF1
+                        text: "--"
+              - obj:
+                  id: en_row_grid
+                  x: 0
+                  y: 76
+                  width: 236
+                  height: 66
+                  styles: plain
+                  hidden: true
+                  scrollable: false
+                  clickable: false
+                  widgets:
+                    - label:
+                        id: en_grid_icon
+                        x: 0
+                        y: 10
+                        text_font: mdi36
+                        text_color: 0x607D8B
+                        text: "\U000F0D3E"
+                    - label:
+                        id: en_grid_lbl
+                        x: 48
+                        y: 2
+                        width: 188
+                        long_mode: DOT
+                        text_font: f14
+                        text_color: 0x90A4AE
+                        text: "Netz"
+                    - label:
+                        id: en_grid_val
+                        x: 48
+                        y: 20
+                        text_font: f26b
+                        text_color: 0xECEFF1
+                        text: "--"
+        - obj:
+            id: en_right
+            x: 560
+            y: 186
+            width: 236
+            height: 144
+            styles: plain
+            scrollable: false
+            clickable: false
+            widgets:
+              - obj:
+                  id: en_row_pv
+                  x: 0
+                  y: 4
+                  width: 236
+                  height: 66
+                  styles: plain
+                  hidden: true
+                  scrollable: false
+                  clickable: false
+                  widgets:
+                    - label:
+                        id: en_pv_icon
+                        x: 0
+                        y: 10
+                        text_font: mdi36
+                        text_color: 0x607D8B
+                        text: "\U000F05A8"
+                    - label:
+                        x: 48
+                        y: 2
+                        width: 188
+                        long_mode: DOT
+                        text_font: f14
+                        text_color: 0x90A4AE
+                        text: "PV"
+                    - label:
+                        id: en_pv_val
+                        x: 48
+                        y: 20
+                        text_font: f26b
+                        text_color: 0xECEFF1
+                        text: "--"
+              - obj:
+                  id: en_row_bat
+                  x: 0
+                  y: 76
+                  width: 236
+                  height: 66
+                  styles: plain
+                  hidden: true
+                  scrollable: false
+                  clickable: false
+                  widgets:
+                    - label:
+                        id: en_bat_icon
+                        x: 0
+                        y: 10
+                        text_font: mdi36
+                        text_color: 0x81C784
+                        text: "\U000F0079"
+                    - label:
+                        id: en_bat_lbl
+                        x: 48
+                        y: 2
+                        width: 188
+                        long_mode: DOT
+                        text_font: f14
+                        text_color: 0x90A4AE
+                        text: "Akku"
+                    - label:
+                        id: en_bat_val
+                        x: 48
+                        y: 20
+                        text_font: f26b
+                        text_color: 0xECEFF1
+                        text: "--"
+                    - bar:
+                        id: en_bat_bar
+                        x: 128
+                        y: 32
+                        width: 96
+                        height: 10
+                        min_value: 0
+                        max_value: 100
+                        value: 0
+                        clickable: false
+                        radius: 5
+                        bg_color: 0x37474F
+                        indicator:
+                          bg_color: 0x81C784
+                          radius: 5
 
         # =============== Überlagerung: Alarm über der Mitte ===============
         - obj:
