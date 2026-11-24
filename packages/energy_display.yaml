@@ -56,7 +56,7 @@ template:
       - name: "WS Energy Battery SoC"
         unique_id: ws_energy_battery_soc
         unit_of_measurement: "%"
-        device_class: battery
+        # no device_class: battery on purpose – otherwise "low battery" tiles would pick up the house battery
         state_class: measurement
         state: "{{ states('sensor.battery_soc') | float(0) | round(0) }}"
         availability: "{{ states('sensor.battery_soc') | is_number }}"
